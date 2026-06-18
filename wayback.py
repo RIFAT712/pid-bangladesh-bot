@@ -30,20 +30,17 @@ urllib3_cn.allowed_gai_family = allowed_gai_family
 
 session = requests.Session()
 session.trust_env = False  # Do not pick up HTTP_PROXY / HTTPS_PROXY env vars; connect directly
-# Use a short connect timeout so failures are detected instantly.
-# (read timeout is kept long for slow SPN2 polling responses)
 CONNECT_TIMEOUT = 8   # seconds
 
 _queue_lock = threading.Lock()
 
 # ── Dedicated Wayback log ─────────────────────────────────────────────────────
-# Safely resolve log directory to avoid PermissionError on '/' in K8s containers
 _log_dir = getattr(config, 'TOOL_DATA_DIR', None) or os.getcwd()
 WAYBACK_LOG_PATH = os.path.join(_log_dir, 'wayback.log')
 
 _wb_logger = logging.getLogger('wayback')
 _wb_logger.setLevel(logging.DEBUG)
-_wb_logger.propagate = False  # keep it out of the root logger / console
+_wb_logger.propagate = False
 
 _wb_file_handler = logging.FileHandler(WAYBACK_LOG_PATH, encoding='utf-8')
 _wb_file_handler.setLevel(logging.DEBUG)
@@ -71,7 +68,7 @@ def _load_wayback_queue():
             data = json.load(f)
             return data if isinstance(data, list) else []
     except Exception as e:
-        _wblog('warning', f"Warning: could not read wayback queue: {e}")
+        _wblog('warning', f"Warning: could not read wayback queue: {repr(e)}")
         return []
 
 
@@ -81,7 +78,7 @@ def _save_wayback_queue(queue):
         with open(config.WAYBACK_QUEUE_PATH, 'w', encoding='utf-8') as f:
             json.dump(queue, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        _wblog('warning', f"Warning: could not save wayback queue: {e}")
+        _wblog('warning', f"Warning: could not save wayback queue: {repr(e)}")
 
 
 def _enqueue_wayback(url):
@@ -138,29 +135,18 @@ def get_wayback_url(url):
             _wblog('info', f"[404 fallback] Retrieved snapshot: {wayback_url}")
             return wayback_url, None
         else:
-            _wblog('warning', f"[404 fallback] FAIL — No archived version found for: {url}")
+            _wblog('warning', f"[404 fallback] FAIL — Status: {response.status_code} | Raw Response: {response.text}")
             return None, "No archived version found"
 
     except Exception as e:
-        _wblog('error', f"[404 fallback] ERROR for {url}: {e}")
+        _wblog('error', f"[404 fallback] RAW EXCEPTION for {url}: {repr(e)}")
         return None, f"Wayback Machine error: {str(e)}"
 
 
 def archive_to_wayback(url, _enqueue_on_fail=True):
     """Submit URL to the Save Page Now v2 API for Wayback Machine archiving.
-    Uses Internet Archive S3-like credentials (ia.key) when available.
-    Falls back to unauthenticated request if keys are missing.
-    On failure, adds the URL to wayback_pending.json for retry on the next run
-    (unless _enqueue_on_fail=False, used internally by the retry loop).
-    Returns True if the archive was confirmed created, False otherwise.
+    Outputs raw status codes and payloads on all failure scenarios.
     """
-    # web.archive.org is not reachable from Toolforge Kubernetes pods.
-    # Silently queue the URL for processing on a local machine instead.
-    if getattr(config, 'TOOL_DATA_DIR', None):
-        if _enqueue_on_fail:
-            _enqueue_wayback(url)
-        return False
-
     _wblog('info', f"Archiving to Wayback Machine: {url}")
     success = False
     try:
@@ -168,6 +154,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
             'User-Agent': 'PID-Bangladesh-UploadBot/2.0',
             'Accept': 'application/json',
         }
+        
         # Authenticated path — uses SPN2 API with IA S3-like keys
         if getattr(config, 'IA_KEYS', {}).get('access') and getattr(config, 'IA_KEYS', {}).get('secret'):
             headers['Authorization'] = f"LOW {config.IA_KEYS['access']}:{config.IA_KEYS['secret']}"
@@ -175,6 +162,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
             response = session.post(
                 'https://web.archive.org/save',
                 headers=headers, data=data, timeout=(CONNECT_TIMEOUT, 120))
+            
             try:
                 resp_json = response.json()
             except Exception:
@@ -183,7 +171,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
             if response.status_code == 200 and resp_json.get('job_id'):
                 job_id = resp_json['job_id']
                 _wblog('info', f"SPN2 job submitted: {job_id} — polling for result...")
-                # Poll for job completion (up to ~90s, 18 × 5 s)
+                
                 timed_out = True
                 for _ in range(18):
                     time.sleep(5)
@@ -192,43 +180,40 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
                             f'https://web.archive.org/save/status/{job_id}',
                             headers=headers, timeout=(CONNECT_TIMEOUT, 30))
                         status = status_r.json()
-                    except Exception:
+                    except Exception as poll_err:
+                        _wblog('debug', f"[SPN2 Polling] Raw tracking exception: {repr(poll_err)}")
                         continue
+                        
                     s = status.get('status', '')
                     if s == 'success':
                         archived = 'https://web.archive.org/web/' + status.get('timestamp', '') + '/' + url
                         _wblog('info', f"[SPN2] SUCCESS — Archived: {archived}")
-                        _dequeue_wayback(url)  # remove from retry queue if it was pending
+                        _dequeue_wayback(url)
                         success = True
                         timed_out = False
                         break
                     elif s == 'error':
-                        err_detail = status.get('exception', status)
-                        _wblog('error', f"[SPN2] FAIL — Error for {url}: {err_detail}")
+                        _wblog('error', f"[SPN2] RAW JOB ERROR JSON: {status}")
                         timed_out = False
                         break
-                    # status == 'pending' — keep polling
+                        
                 if timed_out:
                     _wblog('error', f"[SPN2] FAIL — Job timed out (>90 s) for: {url}")
-                    _wblog('warning', f"  URL will be retried on the next run via wayback_pending.json")
-            elif response.status_code == 523:
-                # Cloudflare 523 = IA cannot reach the origin server
-                _wblog('error', f"[SPN2] FAIL — HTTP 523: Wayback Machine could not reach the origin server for: {url}")
-                _wblog('warning', f"  (HTTP 523 – the host may be blocking IA crawlers)")
             else:
-                _wblog('error', f"[SPN2] FAIL — API error HTTP {response.status_code} for {url}: {resp_json}")
+                _wblog('error', f"[SPN2] RAW HTTP ERROR — Status: {response.status_code} | Body: {response.text}")
+        
         else:
-            # Unauthenticated fallback — GET request which browsers use
-            # NOTE: This is unreliable; configure ia.key for guaranteed archiving
-            session.get(
+            # Unauthenticated fallback
+            fallback_resp = session.get(
                 f'https://web.archive.org/save/{url}',
                 headers={'User-Agent': 'PID-Bangladesh-UploadBot/2.0'},
                 timeout=(CONNECT_TIMEOUT, 60), allow_redirects=True)
-            # Verify it was actually archived by querying the availability API
+            
             time.sleep(5)
             check = session.get(
                 f'https://archive.org/wayback/available?url={url}',
                 timeout=(CONNECT_TIMEOUT, 15))
+            
             snapshots = check.json().get('archived_snapshots', {})
             if snapshots:
                 confirmed_url = snapshots.get('closest', {}).get('url', '')
@@ -236,56 +221,46 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
                 _dequeue_wayback(url)
                 success = True
             else:
-                _wblog('error', f"[Unauth] FAIL — Snapshot not confirmed for: {url}")
-                _wblog('warning', f"  Tip: Add Internet Archive S3 keys to ia.key for reliable archiving.")
+                _wblog('error', f"[Unauth] RAW FAIL — Save Status: {fallback_resp.status_code} | Check Status: {check.status_code} | Check Body: {check.text}")
+                
     except Exception as e:
-        _wblog('error', f"[Archive] EXCEPTION for {url}: {e}")
+        _wblog('error', f"[Archive] RAW SYSTEM EXCEPTION for {url}: {repr(e)}")
 
     if not success and _enqueue_on_fail:
-        _wblog('warning', f"  Wayback Machine unavailable or failed — saving to queue for next run.")
         _enqueue_wayback(url)
 
     return success
 
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 def retry_wayback_queue():
-    """At the start of each run, retry all URLs left in wayback_pending.json.
-    Successfully archived URLs are removed from the queue.
-    On Toolforge, web.archive.org is unreachable — report the queue size and list the URLs.
+    """Sequentially loop through pending URLs with a strict 15-second delay.
+    Exposes raw underlying infrastructure errors.
     """
     queue = _load_wayback_queue()
     if not queue:
         _wblog('info', "Wayback queue is empty — nothing to retry.")
         return
         
-    if getattr(config, 'TOOL_DATA_DIR', None):
-        _wblog('info', f"Wayback queue has {len(queue)} URL(s) pending. "
-                       f"Run locally to flush (web.archive.org not reachable from Toolforge).")
-        _wblog('info', "--- Pending URLs for Retry ---")
-        for idx, pending_url in enumerate(queue, 1):
-            _wblog('info', f"  {idx}. {pending_url}")
-        _wblog('info', "------------------------------")
-        return
-        
-    _wblog('info', f"\nRetrying {len(queue)} pending Wayback Machine archive(s) from previous runs (in parallel)...")
+    _wblog('info', f"\nRetrying {len(queue)} pending archive(s) sequentially with a 15-second delay limit...")
     still_pending = []
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_url = {executor.submit(archive_to_wayback, url, False): url for url in queue}
-        for future in as_completed(future_to_url):
-            url = future_to_url[future]
-            try:
-                success = future.result()
-                if success:
-                    _wblog('info', f"  Retry succeeded: {url}")
-                else:
-                    _wblog('error', f"  [Retry] FAIL — Still failing, keeping in queue: {url}")
-                    still_pending.append(url)
-            except Exception as exc:
-                _wblog('error', f"  [Retry] EXCEPTION for {url}: {exc}")
+    for idx, url in enumerate(queue, 1):
+        _wblog('info', f"Processing item [{idx}/{len(queue)}]: {url}")
+        try:
+            # Execute archiving directly (unblocked framework execution)
+            success = archive_to_wayback(url, _enqueue_on_fail=False)
+            if success:
+                _wblog('info', f"  Retry successful: {url}")
+            else:
                 still_pending.append(url)
+        except Exception as exc:
+            _wblog('error', f"  [Loop Engine] RAW EXCEPTION for {url}: {repr(exc)}")
+            still_pending.append(url)
+
+        # Enforce 15-second intervals between queue requests
+        if idx < len(queue):
+            _wblog('info', "  Sleeping 15 seconds before launching next request...")
+            time.sleep(15)
 
     _save_wayback_queue(still_pending)
-    _wblog('info', f"Wayback retry done. {len(queue) - len(still_pending)} succeeded, {len(still_pending)} still pending.")
+    _wblog('info', f"Wayback retry cycle finished. {len(queue) - len(still_pending)} succeeded, {len(still_pending)} remains in file.")
