@@ -314,7 +314,7 @@ def scrape_page(page_num, wikimedia_urls, hard_stop_url):
 
 def scrape_data():
     """Scrape data from pressinform.gov.bd"""
-    output_dir = os.path.expanduser('~/output')
+    output_dir = os.path.join(config.CREDS_DIR, 'output')
     os.makedirs(output_dir, exist_ok=True)
 
     current_year = datetime.now().year
