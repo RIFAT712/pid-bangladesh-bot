@@ -27,7 +27,7 @@ CONNECT_TIMEOUT = 8   # seconds
 _queue_lock = threading.Lock()
 
 # ── Dedicated Wayback log ─────────────────────────────────────────────────────
-WAYBACK_LOG_PATH = os.path.join(config.CREDS_DIR, 'wayback.log')
+WAYBACK_LOG_PATH = os.path.join(os.path.expanduser('~'), 'wayback.log')
 
 _wb_logger = logging.getLogger('wayback')
 _wb_logger.setLevel(logging.DEBUG)
