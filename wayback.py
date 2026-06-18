@@ -18,6 +18,14 @@ import config
 from config import retry_on_failure
 
 session = requests.Session()
+# Toolforge Kubernetes pods cannot connect directly to the internet.
+# All external traffic must go through the internal datacenter web proxy.
+# This does NOT apply to the bastion host — only to job/webservice containers.
+if config.TOOL_DATA_DIR:
+    session.proxies.update({
+        'http':  'http://webproxy.eqiad.wmnet:8080',
+        'https': 'http://webproxy.eqiad.wmnet:8080',
+    })
 
 _queue_lock = threading.Lock()
 
