@@ -33,6 +33,7 @@ build/
 *.xlsx
 *.xls
 wayback_pending.json
+wayback.log
 tempCodeRunnerFile.py
 
 # ── OS ────────────────────────────────────────────────────────────────────────
