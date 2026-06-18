@@ -253,16 +253,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 def retry_wayback_queue():
     """At the start of each run, retry all URLs left in wayback_pending.json.
     Successfully archived URLs are removed from the queue.
-    On Toolforge, web.archive.org is unreachable — just report the queue size.
+    On Toolforge, web.archive.org is unreachable — report the queue size and list the URLs.
     """
     queue = _load_wayback_queue()
     if not queue:
         _wblog('info', "Wayback queue is empty — nothing to retry.")
         return
+        
     if getattr(config, 'TOOL_DATA_DIR', None):
         _wblog('info', f"Wayback queue has {len(queue)} URL(s) pending. "
                        f"Run locally to flush (web.archive.org not reachable from Toolforge).")
+        _wblog('info', "--- Pending URLs for Retry ---")
+        for idx, pending_url in enumerate(queue, 1):
+            _wblog('info', f"  {idx}. {pending_url}")
+        _wblog('info', "------------------------------")
         return
+        
     _wblog('info', f"\nRetrying {len(queue)} pending Wayback Machine archive(s) from previous runs (in parallel)...")
     still_pending = []
 
