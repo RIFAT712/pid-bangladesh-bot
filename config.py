@@ -93,7 +93,7 @@ GOOGLE_CREDENTIALS = None            # set by credentials.load_credentials()
 IA_KEYS = {'access': None, 'secret': None}  # set by credentials.load_ia_keys()
 
 # ── Google Drive OCR ──────────────────────────────────────────────────────────
-DRIVE_TOKEN_PATH = os.path.join(SCRIPT_DIR, 'drive_token.json')
+DRIVE_TOKEN_PATH = os.path.join(CREDS_DIR, 'drive_token.json')
 DRIVE_SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 # ── Prompt templates ──────────────────────────────────────────────────────────

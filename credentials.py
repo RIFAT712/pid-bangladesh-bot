@@ -76,7 +76,7 @@ def load_credentials():
             print(f"ERROR: Invalid JSON in environment variable: {e}")
 
     # Fallback to JSON file (for local development)
-    creds_file = os.path.join(config.SCRIPT_DIR, 'JSON.json')
+    creds_file = os.path.join(config.CREDS_DIR, 'JSON.json')
     print(f"Loading credentials from: {creds_file}")
 
     if not os.path.exists(creds_file):
