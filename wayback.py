@@ -18,11 +18,6 @@ import config
 from config import retry_on_failure
 
 session = requests.Session()
-if config.TOOL_DATA_DIR:
-    session.proxies.update({
-        'http': 'http://webproxy.eqiad.wmnet:8080',
-        'https': 'http://webproxy.eqiad.wmnet:8080'
-    })
 
 _queue_lock = threading.Lock()
 
@@ -201,6 +196,8 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
     return success
 
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 def retry_wayback_queue():
     """At the start of each run, retry all URLs left in wayback_pending.json.
     Successfully archived URLs are removed from the queue.
@@ -209,14 +206,23 @@ def retry_wayback_queue():
     if not queue:
         print("Wayback queue is empty — nothing to retry.")
         return
-    print(f"\nRetrying {len(queue)} pending Wayback Machine archive(s) from previous runs...")
+    print(f"\nRetrying {len(queue)} pending Wayback Machine archive(s) from previous runs (in parallel)...")
     still_pending = []
-    for url in queue:
-        success = archive_to_wayback(url, _enqueue_on_fail=False)
-        if success:
-            print(f"  Retry succeeded: {url}")
-        else:
-            print(f"  Still failing, keeping in queue: {url}")
-            still_pending.append(url)
+    
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_url = {executor.submit(archive_to_wayback, url, False): url for url in queue}
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                success = future.result()
+                if success:
+                    print(f"  Retry succeeded: {url}")
+                else:
+                    print(f"  Still failing, keeping in queue: {url}")
+                    still_pending.append(url)
+            except Exception as exc:
+                print(f"  Retry generated an exception for {url}: {exc}")
+                still_pending.append(url)
+
     _save_wayback_queue(still_pending)
     print(f"Wayback retry done. {len(queue) - len(still_pending)} succeeded, {len(still_pending)} still pending.")
