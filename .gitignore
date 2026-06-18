@@ -1,0 +1,40 @@
+# ── Credentials & secrets (NEVER commit these) ────────────────────────────────
+gemini.key
+ia.key
+JSON.json
+drive_token.json
+drive_oauth_client.json
+user-password.py
+user-config.py
+*.key
+*.lwp
+
+# ── Pywikibot runtime files ────────────────────────────────────────────────────
+throttle.ctrl
+pywikibot-*.lwp
+apicache/
+*.pickle
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Data / temp files ─────────────────────────────────────────────────────────
+*.xlsx
+*.xls
+wayback_pending.json
+tempCodeRunnerFile.py
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
