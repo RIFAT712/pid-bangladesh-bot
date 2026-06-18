@@ -45,12 +45,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # so credential files must be looked up via TOOL_DATA_DIR, not SCRIPT_DIR.
 TOOL_DATA_DIR = os.environ.get('TOOL_DATA_DIR', '')   # '' means local dev
 
-if TOOL_DATA_DIR:
-    print("Toolforge environment detected, configuring outbound web proxy...")
-    os.environ['http_proxy'] = 'http://webproxy:8080'
-    os.environ['https_proxy'] = 'http://webproxy:8080'
-    os.environ['no_proxy'] = '127.0.0.1,::1,localhost,.wmnet,.wikimedia.org,.wikipedia.org,.wikibooks.org,.wikiquote.org,.wiktionary.org,.wikisource.org,.wikispecies.org,.wikiversity.org,.wikidata.org,.mediawiki.org,.wikinews.org'
-
 # Prefer TOOL_DATA_DIR (Toolforge Build Service), fall back to SCRIPT_DIR (local)
 CREDS_DIR = TOOL_DATA_DIR if TOOL_DATA_DIR else SCRIPT_DIR
 
