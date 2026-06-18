@@ -8,13 +8,12 @@
 #            (e.g. "pid-bangladesh"). The image name follows the pattern:
 #            tool-<toolname>/<toolname>:latest
 
-name: pid-bot
-# "run-bot" maps to the Procfile entry: run-bot: python main.py
-command: run-bot
-image: tool-pid-bangladesh/pid-bangladesh:latest   # ← change to your tool name
-continuous: true
-mem: 2Gi
-cpu: 1
-mount: all         # needed to access $TOOL_DATA_DIR (credential files on NFS)
-filelog: true      # write stdout/stderr to ~/logs/
-emails: onfinish
+---
+- name: pid-bot
+  command: run-bot
+  image: tool-pid-bangladesh-uploadbot2/tool-pid-bangladesh-uploadbot2:latest
+  continuous: true
+  mem: 2Gi
+  mount: all
+  filelog: true
+

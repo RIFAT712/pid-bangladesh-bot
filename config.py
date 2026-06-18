@@ -70,6 +70,9 @@ def find_pywikibot_config(filename):
 USER_CONFIG_PATH = find_pywikibot_config('user-config.py')
 PASSWORD_FILE_PATH = find_pywikibot_config('user-password.py')
 
+# Critical fix for Toolforge: Tell Pywikibot exactly where to look for user-config.py
+os.environ['PYWIKIBOT_DIR'] = CREDS_DIR
+
 # ── AI / API settings ─────────────────────────────────────────────────────────
 VERTEX_LOCATION = "global"
 PRIMARY_MODEL = "gemini-3.1-flash-lite"
