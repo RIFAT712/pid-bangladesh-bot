@@ -11,12 +11,22 @@ import logging
 import os
 import time
 import threading
+import socket
 
 import requests
+import urllib3.util.connection as urllib3_cn
 from urllib.parse import quote
 
 import config
 from config import retry_on_failure
+
+# ── Force IPv4 ────────────────────────────────────────────────────────────────
+def allowed_gai_family():
+    """Force IPv4 to bypass broken K8s/Toolforge IPv6 routing."""
+    return socket.AF_INET
+
+urllib3_cn.allowed_gai_family = allowed_gai_family
+# ──────────────────────────────────────────────────────────────────────────────
 
 session = requests.Session()
 session.trust_env = False  # Do not pick up HTTP_PROXY / HTTPS_PROXY env vars; connect directly
@@ -27,7 +37,9 @@ CONNECT_TIMEOUT = 8   # seconds
 _queue_lock = threading.Lock()
 
 # ── Dedicated Wayback log ─────────────────────────────────────────────────────
-WAYBACK_LOG_PATH = os.path.join(os.path.expanduser('~'), 'wayback.log')
+# Safely resolve log directory to avoid PermissionError on '/' in K8s containers
+_log_dir = getattr(config, 'TOOL_DATA_DIR', None) or os.getcwd()
+WAYBACK_LOG_PATH = os.path.join(_log_dir, 'wayback.log')
 
 _wb_logger = logging.getLogger('wayback')
 _wb_logger.setLevel(logging.DEBUG)
@@ -144,7 +156,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
     """
     # web.archive.org is not reachable from Toolforge Kubernetes pods.
     # Silently queue the URL for processing on a local machine instead.
-    if config.TOOL_DATA_DIR:
+    if getattr(config, 'TOOL_DATA_DIR', None):
         if _enqueue_on_fail:
             _enqueue_wayback(url)
         return False
@@ -157,7 +169,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
             'Accept': 'application/json',
         }
         # Authenticated path — uses SPN2 API with IA S3-like keys
-        if config.IA_KEYS.get('access') and config.IA_KEYS.get('secret'):
+        if getattr(config, 'IA_KEYS', {}).get('access') and getattr(config, 'IA_KEYS', {}).get('secret'):
             headers['Authorization'] = f"LOW {config.IA_KEYS['access']}:{config.IA_KEYS['secret']}"
             data = {'url': url, 'capture_all': '1'}
             response = session.post(
@@ -247,7 +259,7 @@ def retry_wayback_queue():
     if not queue:
         _wblog('info', "Wayback queue is empty — nothing to retry.")
         return
-    if config.TOOL_DATA_DIR:
+    if getattr(config, 'TOOL_DATA_DIR', None):
         _wblog('info', f"Wayback queue has {len(queue)} URL(s) pending. "
                        f"Run locally to flush (web.archive.org not reachable from Toolforge).")
         return
