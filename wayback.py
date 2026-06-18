@@ -18,14 +18,10 @@ import config
 from config import retry_on_failure
 
 session = requests.Session()
-# Toolforge Kubernetes pods cannot connect directly to the internet.
-# All external traffic must go through the internal datacenter web proxy.
-# This does NOT apply to the bastion host — only to job/webservice containers.
-if config.TOOL_DATA_DIR:
-    session.proxies.update({
-        'http':  'http://webproxy.eqiad.wmnet:8080',
-        'https': 'http://webproxy.eqiad.wmnet:8080',
-    })
+session.trust_env = False  # Do not pick up HTTP_PROXY / HTTPS_PROXY env vars; connect directly
+# Use a short connect timeout so failures are detected instantly.
+# (read timeout is kept long for slow SPN2 polling responses)
+CONNECT_TIMEOUT = 8   # seconds
 
 _queue_lock = threading.Lock()
 
@@ -119,6 +115,13 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
     (unless _enqueue_on_fail=False, used internally by the retry loop).
     Returns True if the archive was confirmed created, False otherwise.
     """
+    # web.archive.org is not reachable from Toolforge Kubernetes pods.
+    # Silently queue the URL for processing on a local machine instead.
+    if config.TOOL_DATA_DIR:
+        if _enqueue_on_fail:
+            _enqueue_wayback(url)
+        return False
+
     print(f"Archiving to Wayback Machine: {url}")
     success = False
     try:
@@ -132,7 +135,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
             data = {'url': url, 'capture_all': '1'}
             response = session.post(
                 'https://web.archive.org/save',
-                headers=headers, data=data, timeout=120)
+                headers=headers, data=data, timeout=(CONNECT_TIMEOUT, 120))
             try:
                 resp_json = response.json()
             except Exception:
@@ -148,7 +151,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
                     try:
                         status_r = session.get(
                             f'https://web.archive.org/save/status/{job_id}',
-                            headers=headers, timeout=30)
+                            headers=headers, timeout=(CONNECT_TIMEOUT, 30))
                         status = status_r.json()
                     except Exception:
                         continue
@@ -180,12 +183,12 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
             session.get(
                 f'https://web.archive.org/save/{url}',
                 headers={'User-Agent': 'PID-Bangladesh-UploadBot/2.0'},
-                timeout=60, allow_redirects=True)
+                timeout=(CONNECT_TIMEOUT, 60), allow_redirects=True)
             # Verify it was actually archived by querying the availability API
             time.sleep(5)
             check = session.get(
                 f'https://archive.org/wayback/available?url={url}',
-                timeout=15)
+                timeout=(CONNECT_TIMEOUT, 15))
             snapshots = check.json().get('archived_snapshots', {})
             if snapshots:
                 print(f"Confirmed archived (unauthenticated): {snapshots.get('closest', {}).get('url', '')}")
@@ -209,10 +212,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 def retry_wayback_queue():
     """At the start of each run, retry all URLs left in wayback_pending.json.
     Successfully archived URLs are removed from the queue.
+    On Toolforge, web.archive.org is unreachable — just report the queue size.
     """
     queue = _load_wayback_queue()
     if not queue:
         print("Wayback queue is empty — nothing to retry.")
+        return
+    if config.TOOL_DATA_DIR:
+        print(f"Wayback queue has {len(queue)} URL(s) pending. "
+              f"Run locally to flush (web.archive.org not reachable from Toolforge).")
         return
     print(f"\nRetrying {len(queue)} pending Wayback Machine archive(s) from previous runs (in parallel)...")
     still_pending = []
