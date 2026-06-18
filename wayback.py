@@ -17,6 +17,13 @@ from urllib.parse import quote
 import config
 from config import retry_on_failure
 
+session = requests.Session()
+if config.TOOL_DATA_DIR:
+    session.proxies.update({
+        'http': 'http://webproxy.eqiad.wmnet:8080',
+        'https': 'http://webproxy.eqiad.wmnet:8080'
+    })
+
 _queue_lock = threading.Lock()
 
 # ── Persistent queue helpers ──────────────────────────────────────────────────
@@ -74,7 +81,7 @@ def get_wayback_url(url):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = requests.get(api_url, headers=headers, timeout=30)
+        response = session.get(api_url, headers=headers, timeout=30)
         response.raise_for_status()
 
         data = response.json()
@@ -83,7 +90,7 @@ def get_wayback_url(url):
             wayback_url = data['archived_snapshots']['closest']['url']
 
             cdx_url = f"http://web.archive.org/cdx/search/cdx?url={encoded_url}&limit=1&output=json"
-            cdx_response = requests.get(cdx_url, headers=headers, timeout=30)
+            cdx_response = session.get(cdx_url, headers=headers, timeout=30)
 
             if cdx_response.status_code == 200:
                 cdx_data = cdx_response.json()
@@ -120,7 +127,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
         if config.IA_KEYS.get('access') and config.IA_KEYS.get('secret'):
             headers['Authorization'] = f"LOW {config.IA_KEYS['access']}:{config.IA_KEYS['secret']}"
             data = {'url': url, 'capture_all': '1'}
-            response = requests.post(
+            response = session.post(
                 'https://web.archive.org/save',
                 headers=headers, data=data, timeout=120)
             try:
@@ -136,7 +143,7 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
                 for _ in range(18):
                     time.sleep(5)
                     try:
-                        status_r = requests.get(
+                        status_r = session.get(
                             f'https://web.archive.org/save/status/{job_id}',
                             headers=headers, timeout=30)
                         status = status_r.json()
@@ -167,13 +174,13 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
         else:
             # Unauthenticated fallback — GET request which browsers use
             # NOTE: This is unreliable; configure ia.key for guaranteed archiving
-            requests.get(
+            session.get(
                 f'https://web.archive.org/save/{url}',
                 headers={'User-Agent': 'PID-Bangladesh-UploadBot/2.0'},
                 timeout=60, allow_redirects=True)
             # Verify it was actually archived by querying the availability API
             time.sleep(5)
-            check = requests.get(
+            check = session.get(
                 f'https://archive.org/wayback/available?url={url}',
                 timeout=15)
             snapshots = check.json().get('archived_snapshots', {})
