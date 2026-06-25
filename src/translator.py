@@ -77,20 +77,36 @@ def google_translate(translate_client, text):
         return None
 
 
-def translate_text(genai_client, translate_client, text, row_index):
+def translate_text(genai_client, vertex_client, translate_client, text, row_index):
     """Translate Bengali text to English.
-    Primary: Gemini (PRIMARY_MODEL → FALLBACK_MODEL).
-    Secondary: Google Translate if Gemini output still contains Bengali.
+
+    Attempt order (cheapest first):
+      1. AI Studio  — primary model   (Free)
+      2. Vertex AI  — primary model   (Paid)
+      3. AI Studio  — fallback model  (Free)
+      4. Vertex AI  — fallback model  (Paid)
+      5. Google Translate             (Paid, last resort if Gemini output still has Bengali)
     """
     if not text.strip():
         return "", "EmptyText"
 
     prompt = config.TRANSLATION_PROMPT.format(text=text.replace('"', "'"))
 
-    for model_name in [config.PRIMARY_MODEL, config.FALLBACK_MODEL]:
+    models_to_try = [
+        (genai_client, config.PRIMARY_MODEL,  "AI Studio primary  (Free)"),
+        (vertex_client, config.PRIMARY_MODEL,  "Vertex AI primary  (Paid)"),
+        (genai_client, config.FALLBACK_MODEL, "AI Studio fallback (Free)"),
+        (vertex_client, config.FALLBACK_MODEL, "Vertex AI fallback (Paid)"),
+    ]
+
+    last_exception = None
+
+    for client, model_name, source_name in models_to_try:
+        backoff = config.INITIAL_BACKOFF
+
         for attempt in range(1, config.MAX_RETRIES + 1):
             try:
-                print(f"Row {row_index}: Sending translation request to {model_name}...")
+                print(f"Row {row_index}: Translation attempt {attempt} via {source_name} ({model_name})...")
 
                 generation_config = {
                     "temperature": 1.0,
@@ -98,15 +114,12 @@ def translate_text(genai_client, translate_client, text, row_index):
                     "max_output_tokens": 8192,
                 }
 
-                resp = genai_client.models.generate_content(
+                resp = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
                     config=generation_config
                 )
                 sleep(2)
-
-                print(f"Row {row_index}: Received translation response from {model_name}")
-                sleep(1)
 
                 if hasattr(resp, "text"):
                     translated = resp.text.strip()
@@ -117,25 +130,37 @@ def translate_text(genai_client, translate_client, text, row_index):
                 if not translated:
                     raise RuntimeError("Empty response")
 
+                # If Gemini still returns Bengali, run Google Translate on top
                 if contains_bengali(translated):
-                    print(f"Row {row_index}: Bengali detected in Gemini output, using Google Translate")
+                    print(f"Row {row_index}: Bengali detected in Gemini output — running Google Translate cleanup")
                     gt_result = google_translate(translate_client, translated)
                     if gt_result:
                         translated = gt_result
                         sleep(1)
 
-                print(f"Row {row_index}: Translated with {model_name}")
+                print(f"Row {row_index}: Translation succeeded via {source_name}")
                 return translated, "Success"
 
             except Exception as e:
-                print(f"Row {row_index}: {model_name} translation attempt {attempt} failed: {e}")
-                if attempt == config.MAX_RETRIES:
-                    if model_name == config.FALLBACK_MODEL:
-                        return "", f"Error:{repr(e)}"
-                    else:
-                        break  # Try next model
+                last_exception = e
+                msg = str(e).lower()
+                is_transient = (
+                    "429" in msg or "resource exhausted" in msg
+                    or "timeout" in msg or "connection" in msg
+                    or "temporar" in msg or "503" in msg or "500" in msg
+                )
 
-    return "", "Error: All models failed"
+                if is_transient and attempt < config.MAX_RETRIES:
+                    wait = min(backoff, config.MAX_BACKOFF)
+                    print(f"Row {row_index}: Transient error on {source_name} (attempt {attempt}): {e} — retrying in {wait:.1f}s")
+                    sleep(wait)
+                    backoff = min(backoff * config.BACKOFF_MULTIPLIER, config.MAX_BACKOFF)
+                else:
+                    print(f"Row {row_index}: {source_name} gave up after attempt {attempt}: {e}")
+                    break  # move to next client/model slot
+
+    print(f"Row {row_index}: All translation clients exhausted. Last error: {last_exception}")
+    return "", f"Error: All models failed — {repr(last_exception)}"
 
 
 # ── Title / filename generation ───────────────────────────────────────────────
@@ -179,7 +204,7 @@ def replace_date_if_needed(title, col_b_date_str):
     return title
 
 
-def generate_title(genai_client, description, date_str, row_index, img_format='jpg'):
+def generate_title(genai_client, vertex_client, description, date_str, row_index, img_format='jpg'):
     """Generate a Wikimedia Commons–compliant filename via Gemini"""
     text = f"{description} {date_str}".strip()
 
@@ -188,10 +213,15 @@ def generate_title(genai_client, description, date_str, row_index, img_format='j
 
     prompt = config.TITLE_PROMPT.format(text=text.replace('"', "'"))
 
-    models_to_try = [config.PRIMARY_MODEL, config.FALLBACK_MODEL]
+    models_to_try = [
+        (genai_client, config.PRIMARY_MODEL,  "AI Studio primary  (Free)"),
+        (vertex_client, config.PRIMARY_MODEL,  "Vertex AI primary  (Paid)"),
+        (genai_client, config.FALLBACK_MODEL, "AI Studio fallback (Free)"),
+        (vertex_client, config.FALLBACK_MODEL, "Vertex AI fallback (Paid)"),
+    ]
     last_exception = None
 
-    for model in models_to_try:
+    for client, model, source_name in models_to_try:
         backoff = config.INITIAL_BACKOFF
 
         for attempt in range(1, config.MAX_RETRIES + 1):
@@ -200,7 +230,7 @@ def generate_title(genai_client, description, date_str, row_index, img_format='j
                 sleep(5)
 
             try:
-                print(f"Row {row_index}: Sending request to {model}...")
+                print(f"Row {row_index}: Sending request to {model} via {source_name}...")
 
                 generation_config = {
                     "temperature": 1.0,
@@ -208,14 +238,14 @@ def generate_title(genai_client, description, date_str, row_index, img_format='j
                     "max_output_tokens": 2048,
                 }
 
-                resp = genai_client.models.generate_content(
+                resp = client.models.generate_content(
                     model=model,
                     contents=prompt,
                     config=generation_config
                 )
                 sleep(2)
 
-                print(f"Row {row_index}: Received response from {model}")
+                print(f"Row {row_index}: Received response from {source_name}")
                 sleep(1)
 
                 if hasattr(resp, "text"):
@@ -240,7 +270,7 @@ def generate_title(genai_client, description, date_str, row_index, img_format='j
 
                 title = replace_date_if_needed(title, date_str)
 
-                print(f"Row {row_index}: Title generated with {model} (without extension): {title}")
+                print(f"Row {row_index}: Title generated with {source_name} (without extension): {title}")
 
                 # Append file extension
                 title = title + '.' + img_format
@@ -259,12 +289,12 @@ def generate_title(genai_client, description, date_str, row_index, img_format='j
 
                 if is_transient and attempt < config.MAX_RETRIES:
                     wait = min(backoff, config.MAX_BACKOFF) + random.uniform(0, backoff * 0.5)
-                    print(f"Row {row_index}: Transient error on {model} (attempt {attempt}): {e}, retrying in {wait:.1f}s")
+                    print(f"Row {row_index}: Transient error on {source_name} (attempt {attempt}): {e}, retrying in {wait:.1f}s")
                     sleep(wait)
                     backoff = min(backoff * config.BACKOFF_MULTIPLIER, config.MAX_BACKOFF)
                     continue
                 else:
-                    print(f"Row {row_index}: Model {model} error (no more retries): {e}")
+                    print(f"Row {row_index}: {source_name} error (no more retries): {e}")
                     break
 
     print(f"Row {row_index}: Failed all models: {last_exception}")

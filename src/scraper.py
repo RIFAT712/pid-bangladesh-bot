@@ -12,7 +12,6 @@ from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
-from openpyxl import Workbook
 
 import config
 
@@ -39,15 +38,17 @@ def generate_unique_id(img_url, date_str, counter):
 
 
 def fetch_wikimedia_data(year):
-    """Fetch data from Wikimedia Module:PIDDateData for given year"""
+    """Fetch data from Wikimedia User:PID-Bangladesh-UploadBot/PIDDateData/{year}.json"""
     headers = {
         'User-Agent': 'PressInformScraper/1.0 Python/requests'
     }
 
+    # Use the bot's user subpage instead of the Data namespace to avoid Tabular Data strictness
+    title = f"User:PID-Bangladesh-UploadBot/PIDDateData/{year}.json"
+    
     urls_to_try = [
-        f"https://commons.wikimedia.org/w/index.php?title=Module:PIDDateData/{year}&action=raw",
-        f"https://commons.wikimedia.org/wiki/Module:PIDDateData/{year}?action=raw",
-        f"https://commons.wikimedia.org/w/api.php?action=query&titles=Module:PIDDateData/{year}&prop=revisions&rvprop=content&format=json&formatversion=2"
+        f"https://commons.wikimedia.org/w/index.php?title={title}&action=raw",
+        f"https://commons.wikimedia.org/w/api.php?action=query&titles={title}&prop=revisions&rvprop=content&format=json&formatversion=2"
     ]
 
     for url in urls_to_try:
@@ -60,8 +61,8 @@ def fetch_wikimedia_data(year):
                 content = response.text
 
                 if 'api.php' in url:
-                    data = json.loads(content)
-                    pages = data.get('query', {}).get('pages', [])
+                    api_data = json.loads(content)
+                    pages = api_data.get('query', {}).get('pages', [])
                     if pages and len(pages) > 0:
                         page_data = pages[0]
                         if 'revisions' in page_data and len(page_data['revisions']) > 0:
@@ -71,29 +72,48 @@ def fetch_wikimedia_data(year):
                     else:
                         continue
 
-                if len(content) < 50:
+                if len(content) < 10:
                     continue
 
                 urls = set()
                 checksums = set()
-                pattern = r'\["(http[^"]+)"\]'
-                matches = re.findall(pattern, content)
-                print(f"Found {len(matches)} URLs in {year} module")
-
-                for match in matches:
-                    normalized = normalize_url(match)
-                    urls.add(normalized)
-
-                # Extract checksums — backwards compatible with both formats:
-                # Old format: ["url"] = "date"
-                # New format: ["url"] = {date="date", checksum="hash"}
-                checksum_pattern = r'\["[^"]+"\]\s*=\s*\{[^}]*checksum\s*=\s*"([^"]+)"'
-                for cs in re.findall(checksum_pattern, content):
-                    checksums.add(cs)
-                print(f"Found {len(checksums)} checksums in {year} module")
-
-                if len(urls) > 0:
-                    return urls, checksums
+                
+                # Strip syntaxhighlight wrappers if they exist
+                if content.startswith("<syntaxhighlight lang=\"json\">\n"):
+                    content = content.replace("<syntaxhighlight lang=\"json\">\n", "")
+                if content.endswith("\n</syntaxhighlight>"):
+                    content = content.replace("\n</syntaxhighlight>", "")
+                
+                # Parse JSON
+                try:
+                    tab_data = json.loads(content)
+                    urls_list = []
+                    
+                    if isinstance(tab_data, dict) and 'data' in tab_data:
+                        # Old Tabular JSON format
+                        rows = tab_data['data']
+                        for row in rows:
+                            if len(row) > 0 and row[0]:
+                                urls_list.append({"url": row[0], "checksum": row[2] if len(row) > 2 else ""})
+                    elif isinstance(tab_data, list):
+                        # New Normal JSON format
+                        urls_list = tab_data
+                    
+                    for item in urls_list:
+                        url = item.get("url")
+                        checksum = item.get("checksum")
+                        if url:
+                            normalized = normalize_url(url)
+                            urls.add(normalized)
+                        if checksum:
+                            checksums.add(checksum)
+                            
+                    print(f"Found {len(urls)} URLs and {len(checksums)} checksums in {year} Data")
+                    if len(urls) > 0:
+                        return urls, checksums
+                except json.JSONDecodeError:
+                    print("Failed to parse JSON data.")
+                    
         except Exception as e:
             print(f"Error with URL {url}: {e}")
             continue
@@ -331,8 +351,7 @@ def scrape_data():
     print(
         f"Total URLs from Wikimedia: {len(wikimedia_urls)}, checksums: {len(wikimedia_checksums)}")
 
-    wb = Workbook()
-    ws = wb.active
+    scraped_data = []
 
     fully_uploaded_pages = 0
     page_num = 1
@@ -362,18 +381,28 @@ def scrape_data():
                 f"Page {page_num}: all items already uploaded ({fully_uploaded_pages}/3 fully-uploaded pages)")
         else:
             fully_uploaded_pages = 0
-            # Fetch dates only for new images
-            for img_url, detail_href in new_items:
+            # Fetch dates only for new images concurrently
+            import concurrent.futures
+            
+            def process_item(item):
+                img_url, detail_href = item
                 if detail_href:
                     date = fetch_detail_date(detail_href)
-                    time.sleep(0.5)
+                    time.sleep(0.1) # Be gentle on the server
                 else:
                     date = ""
                     print(f"No detail link for image: {img_url}")
+                return img_url, detail_href, date
+
+            print(f"Fetching dates for {len(new_items)} new images concurrently...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                processed_items = list(executor.map(process_item, new_items))
+
+            for img_url, detail_href, date in processed_items:
                 unique_id = generate_unique_id(img_url, date, entry_counter)
                 detail_url = f"https://pressinform.gov.bd{detail_href}" if detail_href else ""
                 print(f"Adding: {unique_id} | {date} | {img_url}")
-                ws.append([unique_id, date, img_url, detail_url])
+                scraped_data.append([unique_id, date, img_url, detail_url])
                 entry_counter += 1
             print(f"Page {page_num}: {len(new_items)} new items added")
 
@@ -390,14 +419,8 @@ def scrape_data():
 
     # Check if any new entries were added
     if entry_counter == 1:  # No new entries found
-        print("\nNo new images found. Skipping Excel file creation.")
+        print("\nNo new images found.")
         return None, wikimedia_checksums
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(
-        output_dir, f"pressinform_photos_{timestamp}.xlsx")
-    wb.save(output_file)
-    print(f"\nData saved to {output_file}")
-    print(f"Total rows written: {ws.max_row}")
-
-    return output_file, wikimedia_checksums
+    print(f"\nTotal rows fetched: {len(scraped_data)}")
+    return scraped_data, wikimedia_checksums

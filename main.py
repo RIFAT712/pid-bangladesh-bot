@@ -27,20 +27,21 @@ from google.cloud import translate_v2 as translate
 # ── Project modules ───────────────────────────────────────────────────────────
 import config
 import credentials
-import wayback
-from commons_log import log_to_commons
-from image_processor import ImageProcessor
-from scraper import scrape_data
-from translator import (
+from src import wayback
+from src.commons_log import log_to_commons
+from src.image_processor import ImageProcessor
+from src.scraper import scrape_data
+from src.translator import (
     apply_translation_replacements,
     generate_title,
     load_translation_replacements,
     translate_text,
 )
-from uploader import (
+from src.uploader import (
     ensure_pid_infrastructure,
     initialize_pywikibot,
     update_pid_date_data,
+    batch_update_pid_date_data,
     upload_to_commons,
 )
 
@@ -83,14 +84,15 @@ def main():
     print("\nLoading Internet Archive S3 keys for Save Page Now...")
     credentials.load_ia_keys()
 
-    print("\nChecking Wayback Machine pending queue...")
-    wayback.retry_wayback_queue()
+    print("\nChecking Wayback Machine pending queue in background...")
+    import threading
+    threading.Thread(target=wayback.retry_wayback_queue, daemon=False).start()
 
     # ── Step 1: Scrape ────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
     print("STEP 1: Scraping data from pressinform.gov.bd")
     print("=" * 60)
-    excel_file, wikimedia_checksums = scrape_data()
+    scraped_data, wikimedia_checksums = scrape_data()
 
     # ── Load Google credentials ───────────────────────────────────────────────
     print("\nLoading Google credentials...")
@@ -108,11 +110,18 @@ def main():
             sys.exit(1)
         print(message)
 
-        print("Loading Gemini AI Studio key (free secondary account)...")
+        print("Loading Gemini AI Studio key (free primary account)...")
         gemini_api_key = credentials.load_gemini_api_key()
         genai_client = genai.Client(api_key=gemini_api_key)
+
+        print("Loading Gemini Vertex AI client (paid fallback account)...")
+        project_id = credentials._google_credentials.get(
+            "project_id") if credentials._google_credentials else os.environ.get("GOOGLE_CLOUD_PROJECT")
+        vertex_client = genai.Client(
+            vertexai=True, project=project_id, location=config.VERTEX_LOCATION)
+
         translate_client = translate.Client()
-        print("Gemini (AI Studio) and Translate clients initialized")
+        print("Gemini (AI Studio primary, Vertex fallback) and Translate clients initialized")
 
         print("\nInitializing Pywikibot...")
         result = initialize_pywikibot()
@@ -122,7 +131,7 @@ def main():
         site, FilePage = result
 
         # ── No new images? ────────────────────────────────────────────────────
-        if excel_file is None:
+        if scraped_data is None:
             print("\nNo new images found. Logging to Commons...")
             if log_to_commons(site, df=None):
                 print("Log entry created on Commons.")
@@ -131,78 +140,109 @@ def main():
             return
 
         # ── Load work queue ───────────────────────────────────────────────────
-        print(f"\nLoading Excel file: {excel_file}")
-        df = pd.read_excel(excel_file, header=None)
+        print(f"\nProcessing {len(scraped_data)} new images in memory...")
+        df = pd.DataFrame(scraped_data)
         total_rows = len(df)
         print(f"Total rows to process: {total_rows}")
 
         while df.shape[1] < 14:
             df[df.shape[1]] = ""
 
+        df.columns = [
+            "unique_id", "date", "image_url", "detail_url",
+            "ocr_text", "ocr_status", "translation", "translation_status",
+            "filename", "filename_status", "pid_date_data_info", "pid_date_data_status",
+            "wikitext_description", "upload_status"
+        ]
+
         success_count = 0
         failed_count = 0
 
+        # Track successful uploads for a single batch update to PIDDateData
+        successful_pid_updates = []
+
         # ── Per-image loop ────────────────────────────────────────────────────
-        wayback_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
-        for idx in range(total_rows):
+        wayback_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        db_lock = threading.Lock()
+        upload_lock = threading.Lock()
+
+        thread_local = threading.local()
+
+        def get_image_processor():
+            if not hasattr(thread_local, "image_processor"):
+                from src.image_processor import ImageProcessor
+                ip = ImageProcessor()
+                ip.initialize_vision_client()
+                thread_local.image_processor = ip
+            return thread_local.image_processor
+
+        def process_row(idx):
+            nonlocal success_count, failed_count
             print(f"\n{'='*60}")
             print(f"Processing row {idx + 1}/{total_rows}")
             print(f"{'='*60}")
 
             try:
-                unique_id = str(df.iat[idx, 0]) if pd.notna(
-                    df.iat[idx, 0]) else f"image_{idx}"
-                date_str = str(df.iat[idx, 1]) if pd.notna(
-                    df.iat[idx, 1]) else ""
-                image_url = str(df.iat[idx, 2]) if pd.notna(
-                    df.iat[idx, 2]) else ""
-                detail_url = str(df.iat[idx, 3]) if pd.notna(
-                    df.iat[idx, 3]) else ""
+                with db_lock:
+                    unique_id = str(df.iat[idx, 0]) if pd.notna(
+                        df.iat[idx, 0]) else f"image_{idx}"
+                    date_str = str(df.iat[idx, 1]) if pd.notna(
+                        df.iat[idx, 1]) else ""
+                    image_url = str(df.iat[idx, 2]) if pd.notna(
+                        df.iat[idx, 2]) else ""
+                    detail_url = str(df.iat[idx, 3]) if pd.notna(
+                        df.iat[idx, 3]) else ""
 
                 if not image_url or image_url == 'nan':
-                    print(f"Row {idx + 1}: No URL, skipping")
-                    df.iat[idx, 5] = "No URL"
-                    df.to_excel(excel_file, index=False, header=False)
-                    continue
+                    with db_lock:
+                        print(f"Row {idx + 1}: No URL, skipping")
+                        df.iat[idx, 5] = "No URL"
+                    return
 
                 # Step 1.5 — Archive source URLs to Wayback Machine (Async)
                 print(f"\nSTEP 1.5: Archiving to Wayback Machine (Async)...")
                 wayback_executor.submit(wayback.archive_to_wayback, image_url)
                 if detail_url:
-                    wayback_executor.submit(wayback.archive_to_wayback, detail_url)
+                    wayback_executor.submit(
+                        wayback.archive_to_wayback, detail_url)
 
                 # Step 2 — Download + OCR
                 print(f"\nSTEP 2: Processing image...")
-                result = image_processor.process_image(
+                local_processor = get_image_processor()
+                result = local_processor.process_image(
                     idx + 1, image_url, wikimedia_checksums)
 
-                df.iat[idx, 4] = result['ocr_text']   # Column E: OCR text
-                df.iat[idx, 5] = result['status']      # Column F: Status
-                df.to_excel(excel_file, index=False, header=False)
+                with db_lock:
+                    df.iat[idx, 4] = result['ocr_text']   # Column E: OCR text
+                    df.iat[idx, 5] = result['status']      # Column F: Status
 
                 # Checksum duplicate — already on Commons under a different URL
                 if result.get('is_duplicate'):
                     print(
                         f"Row {idx + 1}: Checksum match — registering URL in module, skipping upload")
                     dup_checksum = result.get('checksum', '')
-                    dup_entry = f'        ["{image_url}"] = {{date="{date_str}", checksum="{dup_checksum}"}},'
-                    df.iat[idx, 10] = dup_entry
-                    df.iat[idx, 13] = "Skipped (checksum duplicate)"
-                    if update_pid_date_data(site, dup_entry):
-                        df.iat[idx, 11] = "Success (dup)"
-                        success_count += 1
-                    else:
-                        df.iat[idx, 11] = "Failed"
-                        failed_count += 1
-                    df.to_excel(excel_file, index=False, header=False)
-                    continue
+                    with upload_lock:
+                        pid_updated = update_pid_date_data(
+                            site, image_url, date_str, dup_checksum)
 
-                if result['image'] is None or \
-                        result['status'].startswith('Error') or \
-                        result['status'].startswith('OCR failed'):
+                    with db_lock:
+                        df.iat[idx,
+                               10] = f"JSON Tabular: {image_url} | {date_str} | {dup_checksum}"
+                        df.iat[idx, 13] = "Skipped (checksum duplicate)"
+                        if pid_updated:
+                            df.iat[idx, 11] = "Success (dup)"
+                            success_count += 1
+                        else:
+                            df.iat[idx, 11] = "Failed"
+                            failed_count += 1
+                    return
+
+                if result['image'] is None or result['status'].startswith('Error') or result['status'].startswith('OCR failed'):
                     print(f"Row {idx + 1}: Image processing failed")
-                    failed_count += 1
-                    continue
+                    with db_lock:
+                        failed_count += 1
+                    return
 
                 img_format = result.get('format', 'jpg')
 
@@ -214,41 +254,41 @@ def main():
                     bengali_text_raw, _translation_replacements)
                 print(f"After pre-translation replacements: {bengali_text}")
                 translation, trans_status = translate_text(
-                    genai_client, translate_client, bengali_text, idx + 1)
+                    genai_client, vertex_client, translate_client, bengali_text, idx + 1)
                 print(f"Translation Data: {translation}")
 
-                df.iat[idx, 6] = translation     # Column G
-                df.iat[idx, 7] = trans_status    # Column H
-                df.to_excel(excel_file, index=False, header=False)
+                with db_lock:
+                    df.iat[idx, 6] = translation     # Column G
+                    df.iat[idx, 7] = trans_status    # Column H
 
                 if trans_status != "Success":
                     print(f"Row {idx + 1}: Translation failed")
-                    failed_count += 1
-                    continue
+                    with db_lock:
+                        failed_count += 1
+                    return
 
                 # Step 4 — Generate filename
                 print(f"\nSTEP 4: Generating title...")
                 title, title_status = generate_title(
-                    genai_client, translation, date_str, idx + 1, img_format)
+                    genai_client, vertex_client, translation, date_str, idx + 1, img_format)
                 print(f"Full Title Data (with extension): {title}")
 
-                df.iat[idx, 8] = title          # Column I
-                df.iat[idx, 9] = title_status   # Column J
-                df.to_excel(excel_file, index=False, header=False)
+                with db_lock:
+                    df.iat[idx, 8] = title          # Column I
+                    df.iat[idx, 9] = title_status   # Column J
 
                 if title_status != "Success":
                     print(f"Row {idx + 1}: Title generation failed")
-                    failed_count += 1
-                    continue
+                    with db_lock:
+                        failed_count += 1
+                    return
 
                 # Step 5 — Prepare description
                 print(f"\nSTEP 5: Preparing metadata...")
                 img_checksum = result.get('checksum', '')
-                data_entry = (
-                    f'        ["{image_url}"] = '
-                    f'{{date="{date_str}", checksum="{img_checksum}"}},'
-                )
-                df.iat[idx, 10] = data_entry  # Column K
+                with db_lock:
+                    df.iat[idx,
+                           10] = f"JSON Tabular: {image_url} | {date_str} | {img_checksum}"
 
                 description = f'''=={{{{int:filedesc}}}}==
 {{{{Information
@@ -263,56 +303,71 @@ def main():
 {{{{PD-BDGov-PID}}}}
 [[Category: Uploaded with pypan]]'''
 
-                df.iat[idx, 12] = "'" + description  # Column M
-                df.to_excel(excel_file, index=False, header=False)
+                with db_lock:
+                    df.iat[idx, 12] = "'" + description  # Column M
 
                 # Step 6 — Upload
                 print(f"\nSTEP 6: Uploading to Wikimedia Commons...")
-                upload_success, upload_error = upload_to_commons(
-                    site, FilePage, result['image'], title, img_format,
-                    result.get('exif'), description
-                )
+                with upload_lock:
+                    upload_success, upload_error = upload_to_commons(
+                        site, FilePage, result['image'], title, img_format,
+                        result.get('exif'), description
+                    )
 
-                if upload_success:
-                    df.iat[idx, 13] = "Success"   # Column N
-                    success_count += 1
-                    print(f"Row {idx + 1}: Upload successful")
-                    sleep(5)
-
-                    print(f"Row {idx + 1}: Updating PIDDateData...")
-                    if update_pid_date_data(site, data_entry):
-                        df.iat[idx, 11] = "Success"
-                        print(f"Row {idx + 1}: PIDDateData updated")
+                    if not upload_success and "already exists" in str(upload_error).lower():
+                        print(
+                            f"Row {idx + 1}: File already exists. Updating PIDDateData to prevent future retries...")
+                        pid_updated = update_pid_date_data(
+                            site, image_url, date_str, img_checksum, unique_id, title)
                     else:
-                        df.iat[idx, 11] = "Failed"
-                        print(f"Row {idx + 1}: PIDDateData update failed")
-                else:
-                    df.iat[idx, 13] = f"Failed: {upload_error}"
-                    failed_count += 1
-                    print(f"Row {idx + 1}: Upload failed - {upload_error}")
+                        pid_updated = False
 
-                df.to_excel(excel_file, index=False, header=False)
+                with db_lock:
+                    if upload_success:
+                        df.iat[idx, 13] = "Success"   # Column N
+                        success_count += 1
+                        print(f"Row {idx + 1}: Upload successful")
+                        successful_pid_updates.append(
+                            (image_url, date_str, img_checksum, unique_id, title))
+                        df.iat[idx, 11] = "Success (queued)"
+                    else:
+                        df.iat[idx, 13] = f"Failed: {upload_error}"
+                        failed_count += 1
+                        print(f"Row {idx + 1}: Upload failed - {upload_error}")
+                        if "already exists" in str(upload_error).lower():
+                            if pid_updated:
+                                df.iat[idx, 11] = "Success (exists)"
+                                print(
+                                    f"Row {idx + 1}: PIDDateData updated (duplicate bypassed)")
+                            else:
+                                df.iat[idx, 11] = "Failed (exists)"
+                                print(
+                                    f"Row {idx + 1}: PIDDateData update failed")
 
             except Exception as e:
-                logger.error(f"Error processing row {idx + 1}: {str(e)}")
-                df.iat[idx, 13] = f"Error: {str(e)}"
-                failed_count += 1
-                df.to_excel(excel_file, index=False, header=False)
+                import traceback
+                traceback.print_exc()
+                print(f"Row {idx + 1}: Unhandled exception: {e}")
+                with db_lock:
+                    failed_count += 1
+                    df.iat[idx, 13] = f"Exception: {str(e)}"
+
+        # Run process_row for all rows concurrently (AI is parallel, Uploads are thread-locked)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(process_row, idx)
+                       for idx in range(total_rows)]
+            concurrent.futures.wait(futures)
 
         # ── Final save + Commons log ──────────────────────────────────────────
-        df.to_excel(excel_file, index=False, header=False)
 
-        print("\nWaiting for pending Wayback Machine archives to complete...")
-        wayback_executor.shutdown(wait=True)
-        print("All Wayback Machine archives completed.")
+        if successful_pid_updates:
+            print(
+                f"\nBatch updating {len(successful_pid_updates)} records to PIDDateData...")
+            batch_update_pid_date_data(site, successful_pid_updates)
 
         print("\nLogging results to Wikimedia Commons...")
         if log_to_commons(site, df, success_count, failed_count, total_rows):
-            try:
-                os.unlink(excel_file)
-                print(f"Excel file deleted: {excel_file}")
-            except Exception as e:
-                print(f"Warning: Could not delete Excel file: {e}")
+            print("Successfully logged to Commons.")
 
         print("\n" + "=" * 60)
         print("PROCESSING COMPLETED")
@@ -320,8 +375,10 @@ def main():
         print(f"Total rows processed: {total_rows}")
         print(f"Successful uploads:   {success_count}")
         print(f"Failed uploads:       {failed_count}")
-        print(f"Results saved to:     {excel_file}")
         print("=" * 60)
+
+        print("\nBackground archiving may still be running. The script will wait automatically before exiting.")
+        wayback_executor.shutdown(wait=False)
 
     finally:
         # Always clean up the temp credentials file
@@ -346,16 +403,17 @@ def _continuous_loop():
         except Exception as e:
             logger.error(f"Critical error in main execution: {e}")
             print(f"Critical error in main execution: {e}")
-        
+
         print("\n" + "=" * 60)
         print("Run completed. Sleeping for 1 hour (3600 seconds) before next check...")
         print("=" * 60)
         sleep(3600)
 
+
 if __name__ == "__main__":
     if "--web" in sys.argv or os.environ.get('TOOLFORGE_WEBSERVICE'):
         import threading
-        
+
         # Start the scraper loop in a background thread so the web server can run
         scraper_thread = threading.Thread(target=_continuous_loop, daemon=True)
         scraper_thread.start()
@@ -373,4 +431,4 @@ if __name__ == "__main__":
         port = int(os.environ.get("PORT", 8000))
         app.run(host='0.0.0.0', port=port)
     else:
-        _continuous_loop()
+        main()

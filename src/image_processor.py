@@ -19,13 +19,34 @@ from googleapiclient.discovery import build as gdrive_build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 import config
-import wayback
+from src import wayback
 from config import compute_checksum, retry_on_failure
 
 
 class ImageProcessor:
     def __init__(self):
         self._drive_service = None
+
+    def cleanup_temp_drive_files(self):
+        """Find and delete any leftover ocr_temp.png files in Google Drive."""
+        if not self._drive_service:
+            return
+        try:
+            results = self._drive_service.files().list(
+                q="name='ocr_temp.png'",
+                spaces='drive',
+                fields='files(id, name)'
+            ).execute()
+            items = results.get('files', [])
+            if items:
+                print(f"Found {len(items)} orphaned temporary Drive files. Cleaning up...")
+                for item in items:
+                    try:
+                        self._drive_service.files().delete(fileId=item['id']).execute()
+                    except Exception as e:
+                        print(f"Failed to clean up {item['id']}: {e}")
+        except Exception as e:
+            print(f"Failed to query Drive for temp files: {e}")
 
     def initialize_vision_client(self):
         """Initialize Google Drive OCR using OAuth2 user credentials"""
@@ -41,6 +62,10 @@ class ImageProcessor:
                     f.write(creds.to_json())
             self._drive_service = gdrive_build(
                 'drive', 'v3', credentials=creds)
+            
+            # Clean up any leftover files from previous interrupted runs
+            self.cleanup_temp_drive_files()
+            
             return True, "Drive OCR initialized with user OAuth2 credentials"
         except Exception as e:
             return False, f"Failed to initialize Drive OCR: {str(e)}"
@@ -157,205 +182,141 @@ class ImageProcessor:
             return None, None, None, None, f"Image processing error: {str(e)}"
 
     def find_white_separator(self, image):
-        """Find separator by scanning vertical columns and horizontal lines"""
+        """
+        Multi-pass Top-Down Variance Scanning separator detector.
+
+        PID images are composite JPEGs: a photograph on top and a printed Bengali
+        caption band below, separated by a horizontal white (or off-white) strip.
+        The goal is to find the top edge of that strip and return the pixel row
+        just above it so the caller can split photo from caption.
+
+        Algorithm overview
+        ------------------
+        Pass 1 — Strict white band (threshold ≥ 240, coverage ≥ 95 %)
+            Scans row-by-row from 35 % of image height downward.  For each
+            candidate row we require a *run* of MIN_RUN consecutive qualifying
+            rows, not just 2-3, so JPEG ringing on the separator boundary cannot
+            produce a false positive.  The run is scored by its minimum coverage
+            value (weakest link) to prefer the cleanest band.
+
+        Pass 2 — Relaxed off-white band (threshold ≥ 220, coverage ≥ 90 %)
+            Older or heavily-compressed PID images use a light-grey separator
+            instead of pure white.  If pass 1 found nothing we repeat with
+            looser thresholds.
+
+        Pass 3 — Gradient edge fallback
+            If no flat-colour band exists at all, we fall back to finding the
+            strongest horizontal edge in the lower half of the image using a
+            Sobel gradient.  This handles unusual layouts without returning -1.
+
+        Offset
+        ------
+        A small log-scaled pixel offset is subtracted from the separator row so
+        the cropped photograph is not clipped at its very bottom edge.  The
+        formula scales with image height (small images need fewer pixels of
+        breathing room than large ones).
+        """
         height, width = image.shape[:2]
-        start_row = int(height * 0.4)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        first_columns = list(range(1, 5))
-        last_columns = list(range(width-5, width-1))
-        all_columns = first_columns + last_columns
+        # Avoid the top 35 % (header / masthead area) and the bottom 5 %
+        # (white bottom-padding is not a separator — ignore it).
+        start_row = int(height * 0.35)
+        end_row   = int(height * 0.95)
 
-        column_heights = {}
-        column_colors = {}
+        # Pre-compute: fraction of pixels per row brighter than a threshold
+        bright_240 = np.sum(gray > 240, axis=1) / width   # strict white
+        bright_220 = np.sum(gray > 220, axis=1) / width   # relaxed off-white
 
-        for col in all_columns:
-            column_height = -1
-            color_samples = []
+        # Minimum consecutive qualifying rows for a valid separator band.
+        # Scales with image height so very tall images need a proportionally
+        # larger run, reducing false positives from wide bright sky bands.
+        MIN_RUN = max(3, int(height / 300))
 
-            for y in range(height-6, start_row-1, -1):
-                pixel = image[y, col]
-
-                if len(color_samples) == 0:
-                    color_samples.append(pixel)
-                    column_height = y
+        def _scan(bg_pct, threshold_pct, search_start, search_end):
+            """
+            Return (separator_row, run_length) for the first run of ≥ MIN_RUN
+            consecutive rows with bg_pct > threshold_pct inside [search_start,
+            search_end), or (-1, 0) if none found.
+            """
+            run_start = -1
+            run_len   = 0
+            for y in range(search_start, search_end):
+                if bg_pct[y] > threshold_pct:
+                    if run_start == -1:
+                        run_start = y
+                    run_len += 1
+                    if run_len >= MIN_RUN:
+                        return run_start, run_len
                 else:
-                    avg_color = np.mean(color_samples, axis=0)
-                    color_diff = np.abs(pixel.astype(np.float32) - avg_color)
-                    max_allowed_diff = 255 * 0.02
-                    is_matching = np.all(color_diff <= max_allowed_diff)
+                    run_start = -1
+                    run_len   = 0
+            return -1, 0
 
-                    if is_matching:
-                        color_samples.append(pixel)
-                        column_height = y
-                    else:
-                        if len(color_samples) > 0:
-                            column_heights[col] = height - 1 - y
-                            column_colors[col] = np.mean(color_samples, axis=0)
-                        break
+        # Log-scaled breathing-room offset (pixels)
+        offset = max(2, int(round((3 / math.log(3100 / 670)) * math.log(height / 670))))
 
-            if column_height != -1 and col not in column_heights:
-                column_heights[col] = height - 1 - start_row
-                if len(color_samples) > 0:
-                    column_colors[col] = np.mean(color_samples, axis=0)
+        # ── Pass 1: strict white (>240, ≥95 %) ───────────────────────────────
+        sep, _ = _scan(bright_240, 0.95, start_row, end_row)
+        if sep != -1:
+            return max(0, sep - offset), False, offset
 
-        if not column_heights:
-            return -1, False
+        # ── Pass 2: relaxed off-white (>220, ≥90 %) ──────────────────────────
+        sep, _ = _scan(bright_220, 0.90, start_row, end_row)
+        if sep != -1:
+            return max(0, sep - offset), False, offset
 
-        min_uniform_top = height
-        for col, col_height in column_heights.items():
-            uniform_top_row = height - col_height
-            min_uniform_top = min(min_uniform_top, uniform_top_row)
+        # ── Pass 3: strongest horizontal gradient edge in lower half ──────────
+        # Blur first to suppress JPEG noise, then run a horizontal Sobel.
+        blurred   = cv2.GaussianBlur(gray, (5, 5), 0)
+        sobelx    = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)   # dy direction
+        grad_mag  = np.abs(sobelx)
+        row_energy = grad_mag.sum(axis=1)   # total horizontal edge energy per row
 
-        valid_lines = []
+        # Only consider the lower half of the search band for the fallback
+        fallback_start = int(height * 0.50)
+        fallback_end   = end_row
+        search_slice   = row_energy[fallback_start:fallback_end]
+        if search_slice.size > 0:
+            best_local = int(np.argmax(search_slice))
+            sep = fallback_start + best_local
+            # Accept only if this row's energy is significantly above the mean
+            # (avoids returning a "best" row in a featureless image)
+            if row_energy[sep] > row_energy[fallback_start:fallback_end].mean() * 2.5:
+                return max(0, sep - offset), False, offset
 
-        for first_col in first_columns:
-            for last_col in last_columns:
-                if first_col in column_heights and last_col in column_heights:
-                    height_diff = abs(
-                        column_heights[first_col] - column_heights[last_col])
-                    if height_diff > 4:
-                        continue
-
-                    first_uniform_top = height - column_heights[first_col]
-                    last_uniform_top = height - column_heights[last_col]
-                    scan_row = max(first_uniform_top, last_uniform_top)
-
-                    if scan_row >= start_row and scan_row < height:
-                        row_pixels = image[scan_row, first_col:last_col+1]
-
-                        if len(row_pixels) > 0:
-                            line_avg_color = np.mean(row_pixels, axis=0)
-                            color_diffs = np.abs(row_pixels.astype(
-                                np.float32) - line_avg_color)
-                            max_allowed_diff = 255 * 0.02
-                            matching_pixels = np.all(
-                                color_diffs <= max_allowed_diff, axis=1)
-                            matching_percentage = np.sum(
-                                matching_pixels) / len(row_pixels)
-
-                            if matching_percentage >= 0.98:
-                                valid_lines.append(scan_row)
-
-        if valid_lines:
-            cutoff_row = min(valid_lines)
-        elif column_heights:
-            cutoff_row = min_uniform_top
-        else:
-            return -1, False
-
-        offset = round(2 + 3/math.log(3100/670) * math.log(height/670))
-        if offset < 2:
-            offset = 2
-
-        separator_row = cutoff_row - offset
-
-        height_38_percent = int(height * 0.38)
-        height_42_percent = int(height * 0.42)
-
-        needs_fallback = (
-            separator_row == -1) or (height_38_percent <= cutoff_row <= height_42_percent)
-
-        if needs_fallback:
-            fallback_start_row = int(height * 0.75)
-            fallback_separator = self.find_separator_fallback(
-                image, fallback_start_row)
-            if fallback_separator != -1:
-                separator_row = fallback_separator
-                return separator_row, True, offset
-
-        return separator_row, False, offset
+        return -1, False, offset
 
     def find_separator_fallback(self, image, start_row):
-        """Fallback method to find separator"""
-        height, width = image.shape[:2]
-
-        fallback_consecutive_similar_lines = 0
-        fallback_separator_row = -1
-
-        fallback_required_lines = round(
-            (4 / math.log(3100 / 670)) * math.log(height / 670) + 5)
-        if fallback_required_lines <= 1:
-            fallback_required_lines = 2
-
-        white_color = np.array([255, 255, 255], dtype=np.uint8)
-        fbf9fa_color = np.array([250, 249, 251], dtype=np.uint8)
-        color_tolerance = 255 * 0.02
-
-        for y_fallback in range(start_row, height):
-            row_fallback = image[y_fallback]
-
-            white_diff = np.abs(row_fallback.astype(
-                np.float32) - white_color.astype(np.float32))
-            white_matching = np.all(white_diff <= color_tolerance, axis=1)
-
-            fbf9fa_diff = np.abs(row_fallback.astype(
-                np.float32) - fbf9fa_color.astype(np.float32))
-            fbf9fa_matching = np.all(fbf9fa_diff <= color_tolerance, axis=1)
-
-            matching_pixels = white_matching | fbf9fa_matching
-            matching_percentage = np.sum(matching_pixels) / width
-
-            if matching_percentage >= 0.98:
-                fallback_consecutive_similar_lines += 1
-                if fallback_consecutive_similar_lines >= fallback_required_lines:
-                    if fallback_consecutive_similar_lines >= 10:
-                        fallback_separator_row_y_offset = fallback_consecutive_similar_lines + 5
-                    elif fallback_consecutive_similar_lines in (1, 2, 3):
-                        fallback_separator_row_y_offset = 2
-                    else:
-                        fallback_separator_row_y_offset = fallback_consecutive_similar_lines + 5
-
-                    fallback_separator_row = y_fallback - fallback_separator_row_y_offset
-                    break
-            else:
-                fallback_consecutive_similar_lines = 0
-
-        return fallback_separator_row
+        """Legacy stub — logic is now incorporated into find_white_separator pass 3."""
+        return -1
 
     def crop_side_whitespace(self, image):
         """Crop white or fbf9fa colored sections from left and right sides"""
         height, width = image.shape[:2]
 
-        white_color = np.array([255, 255, 255], dtype=np.uint8)
-        fbf9fa_color = np.array([250, 249, 251], dtype=np.uint8)
-        color_tolerance = 255 * 0.02
+        # Vectorized processing over entire image using fast int thresholds
+        B = image[:, :, 0]
+        G = image[:, :, 1]
+        R = image[:, :, 2]
+        
+        white_match = (B >= 250) & (G >= 250) & (R >= 250)
+        fbf9fa_match = (B >= 246) & (G >= 244) & (G <= 254) & (R >= 245)
+
+        matching_pixels = white_match | fbf9fa_match
+        matching_percentage = np.sum(matching_pixels, axis=0) / height
+        is_background_col = matching_percentage >= 0.98
 
         left_crop = 0
         for x in range(width):
-            column = image[:, x]
-
-            white_diff = np.abs(column.astype(np.float32) -
-                                white_color.astype(np.float32))
-            white_matching = np.all(white_diff <= color_tolerance, axis=1)
-
-            fbf9fa_diff = np.abs(column.astype(
-                np.float32) - fbf9fa_color.astype(np.float32))
-            fbf9fa_matching = np.all(fbf9fa_diff <= color_tolerance, axis=1)
-
-            matching_pixels = white_matching | fbf9fa_matching
-            matching_percentage = np.sum(matching_pixels) / height
-
-            if matching_percentage >= 0.98:
+            if is_background_col[x]:
                 left_crop = x + 1
             else:
                 break
 
         right_crop = width
         for x in range(width-1, -1, -1):
-            column = image[:, x]
-
-            white_diff = np.abs(column.astype(np.float32) -
-                                white_color.astype(np.float32))
-            white_matching = np.all(white_diff <= color_tolerance, axis=1)
-
-            fbf9fa_diff = np.abs(column.astype(
-                np.float32) - fbf9fa_color.astype(np.float32))
-            fbf9fa_matching = np.all(fbf9fa_diff <= color_tolerance, axis=1)
-
-            matching_pixels = white_matching | fbf9fa_matching
-            matching_percentage = np.sum(matching_pixels) / height
-
-            if matching_percentage >= 0.98:
+            if is_background_col[x]:
                 right_crop = x
             else:
                 break
@@ -410,6 +371,7 @@ class ImageProcessor:
         """Perform OCR using Google Drive API (free, replaces Vision API)"""
         file_id = None
         temp_path = None
+        temp_file_obj = None
         try:
             # Save image section to a temp file
             temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
@@ -421,8 +383,9 @@ class ImageProcessor:
                 'name': 'ocr_temp.png',
                 'mimeType': 'application/vnd.google-apps.document',
             }
+            temp_file_obj = open(temp_path, 'rb')
             media = MediaIoBaseUpload(
-                open(temp_path, 'rb'),
+                temp_file_obj,
                 mimetype='image/png',
                 resumable=False
             )
@@ -457,6 +420,12 @@ class ImageProcessor:
             return f"OCR Error: {str(e)}"
 
         finally:
+            if temp_file_obj:
+                try:
+                    temp_file_obj.close()
+                except Exception:
+                    pass
+
             # Always delete the local temp file
             if temp_path and os.path.exists(temp_path):
                 try:

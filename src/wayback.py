@@ -199,6 +199,10 @@ def archive_to_wayback(url, _enqueue_on_fail=True):
                         
                 if timed_out:
                     _wblog('error', f"[SPN2] FAIL — Job timed out (>90 s) for: {url}")
+            elif resp_json.get('status_ext') == 'error:too-many-daily-captures':
+                _wblog('info', f"[SPN2] SUCCESS — Already captured today: {url}")
+                _dequeue_wayback(url)
+                success = True
             else:
                 _wblog('error', f"[SPN2] RAW HTTP ERROR — Status: {response.status_code} | Body: {response.text}")
         

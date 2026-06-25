@@ -12,7 +12,8 @@
 - name: pid-bot
   command: run-bot
   image: tool-pid-bangladesh-uploadbot2/tool-pid-bangladesh-uploadbot2:latest
-  continuous: true
+  schedule: "@hourly"
+  # continuous: true
   mem: 2Gi
   mount: all
   filelog: true

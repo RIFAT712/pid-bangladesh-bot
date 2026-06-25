@@ -111,3 +111,30 @@ def setup_credentials():
     os.environ["GOOGLE_CLOUD_PROJECT"] = _google_credentials["project_id"]
 
     return creds_path
+
+
+# ── Future Backup APIs (Boilerplate Template) ──────────────────────────────────
+# Add new API keys here when you want to expand fallback models in the future.
+
+def load_openai_api_key():
+    """Boilerplate template: Load OpenAI API key for backup fallback."""
+    key_path = os.path.join(config.CREDS_DIR, 'openai.key')
+    if not os.path.exists(key_path):
+        return None
+    with open(key_path, 'r') as f:
+        for line in f:
+            if line.startswith('OPENAI_API_KEY='):
+                return line.split('=', 1)[1].strip()
+    return None
+
+
+def load_anthropic_api_key():
+    """Boilerplate template: Load Anthropic API key for backup fallback."""
+    key_path = os.path.join(config.CREDS_DIR, 'anthropic.key')
+    if not os.path.exists(key_path):
+        return None
+    with open(key_path, 'r') as f:
+        for line in f:
+            if line.startswith('ANTHROPIC_API_KEY='):
+                return line.split('=', 1)[1].strip()
+    return None

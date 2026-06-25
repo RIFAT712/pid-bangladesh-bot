@@ -108,41 +108,77 @@ def upload_to_commons(site, FilePage, image, target_filename, img_format, exif_d
             pass
 
 
-def update_pid_date_data(site, data_entry):
-    """Append a new entry to Module:PIDDateData/<current year> on Wikimedia Commons."""
+def update_pid_date_data(site, url, date_str, checksum="", unique_id="", filename=""):
+    """Append a single new entry to User:PID-Bangladesh-UploadBot/PIDDateData/{current_year}.json on Wikimedia Commons."""
+    return batch_update_pid_date_data(site, [(url, date_str, checksum, unique_id, filename)])
+
+
+def batch_update_pid_date_data(site, records):
+    """Append multiple entries to User:PID-Bangladesh-UploadBot/PIDDateData/{current_year}.json on Wikimedia Commons."""
+    if not records:
+        return True
+        
+    import json
     try:
         current_year = datetime.now().year
-        page_title = f"Module:PIDDateData/{current_year}"
+        page_title = f"User:PID-Bangladesh-UploadBot/PIDDateData/{current_year}.json"
         page = pywikibot.Page(site, page_title)
 
         if not page.exists():
             logger.error(f"Page does not exist: {page_title}")
             return False
 
-        page_text = page.text
-        last_brace_index = page_text.rfind('}')
-
-        if last_brace_index == -1:
-            logger.error("Could not find closing brace in page")
+        try:
+            content = page.text
+            if content.startswith("<syntaxhighlight lang=\"json\">\n"):
+                content = content.replace("<syntaxhighlight lang=\"json\">\n", "")
+            if content.endswith("\n</syntaxhighlight>"):
+                content = content.replace("\n</syntaxhighlight>", "")
+            tab_data = json.loads(content)
+            
+            # Migrate Tabular Data format to Normal JSON format
+            if isinstance(tab_data, dict) and 'data' in tab_data:
+                new_list = []
+                for row in tab_data['data']:
+                    new_list.append({
+                        "url": row[0] if len(row) > 0 else "",
+                        "date": row[1] if len(row) > 1 else "",
+                        "checksum": row[2] if len(row) > 2 else "",
+                        "unique_id": row[3] if len(row) > 3 else "",
+                        "filename": row[4] if len(row) > 4 else ""
+                    })
+                tab_data = new_list
+            elif not isinstance(tab_data, list):
+                tab_data = []
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse JSON in {page_title}")
             return False
 
-        new_entry = f"    {data_entry}\n"
-        updated_text = page_text[:last_brace_index] + new_entry + page_text[last_brace_index:]
+        for url, date_str, checksum, unique_id, filename in records:
+            tab_data.append({
+                "url": url,
+                "date": date_str,
+                "checksum": checksum,
+                "unique_id": unique_id,
+                "filename": filename
+            })
 
-        page.text = updated_text
-        page.save(summary="added another image")
+        json_str = json.dumps(tab_data, ensure_ascii=False, separators=(',', ':'))
+        page.text = json_str
+        page.save(summary=f"added {len(records)} images", bot=True)
 
-        logger.info(f"Successfully updated {page_title}")
+        logger.info(f"Successfully batch updated {page_title} with {len(records)} records")
         return True
 
     except Exception as e:
-        logger.error(f"Error updating PIDDateData: {str(e)}")
+        logger.error(f"Error batch updating PIDDateData: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 
 def ensure_pid_infrastructure(site):
-    """Ensure all required categories and Module:PIDDateData/<year> exist for today."""
+    """Ensure all required categories and User:PID-Bangladesh-UploadBot/PIDDateData/{year}.json exist for today."""
+    import json
     now = datetime.now()
     year = now.year
     month = now.month
@@ -209,15 +245,17 @@ def ensure_pid_infrastructure(site):
         except Exception as e:
             logger.error(f"Error creating {title}: {e}")
 
-    # Ensure Module:PIDDateData/<year> exists
-    module_title = f"Module:PIDDateData/{year}"
+    # Ensure PIDDateData/{year}.json exists
+    tab_title = f"User:PID-Bangladesh-UploadBot/PIDDateData/{year}.json"
     try:
-        module_page = pywikibot.Page(site, module_title)
-        if not module_page.exists():
-            module_page.text = "return {\n\n\n}"
-            module_page.save(summary="Creating PIDDateData module for new year")
-            logger.info(f"Created: {module_title}")
+        tab_page = pywikibot.Page(site, tab_title)
+        if not tab_page.exists():
+            initial_data = []
+            json_str = json.dumps(initial_data, separators=(',', ':'))
+            tab_page.text = json_str
+            tab_page.save(summary="Creating Data schema for new year", bot=True)
+            logger.info(f"Created: {tab_title}")
         else:
-            logger.info(f"Already exists: {module_title}")
+            logger.info(f"Already exists: {tab_title}")
     except Exception as e:
-        logger.error(f"Error creating {module_title}: {e}")
+        logger.error(f"Error creating {tab_title}: {e}")
