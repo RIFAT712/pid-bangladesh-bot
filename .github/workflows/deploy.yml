@@ -6,7 +6,7 @@
 #   TOOLFORGE_SSH_PRIVATE_KEY  – private key whose public half is in
 #                                ~/.ssh/authorized_keys on Toolforge
 #   TOOLFORGE_TOOL_NAME        – Toolforge tool account name (e.g. "pid-bangladesh")
-#   GITHUB_REPO_URL            – Full HTTPS URL of this repo
+#   TOOLFORGE_REPO_URL         – Full HTTPS URL of this repo
 #                                (e.g. "https://github.com/you/pid-bot")
 
 name: Deploy to Toolforge (Build Service)
@@ -45,7 +45,7 @@ jobs:
       - name: Trigger build on Toolforge
         env:
           TOOL_NAME: ${{ secrets.TOOLFORGE_TOOL_NAME }}
-          REPO_URL:  ${{ secrets.GITHUB_REPO_URL }}
+          REPO_URL:  ${{ secrets.TOOLFORGE_REPO_URL }}
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${TOOL_NAME}@login.toolforge.org" \
