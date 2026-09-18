@@ -21,6 +21,7 @@ import humanize
 from croniter import croniter
 from flask import (Flask, Response, abort, flash, redirect, render_template,
                    request, session, url_for)
+from requests import HTTPError
 from toolforge_weld.api_client import ToolforgeClient
 from toolforge_weld.kubernetes_config import Kubeconfig
 
@@ -135,6 +136,14 @@ def fetch_job():
     """
     try:
         return jobs_api().get(_job_url(), display_messages=False).get('job'), True
+    except HTTPError as e:
+        # A 404 is the API answering, not failing: there is no such job. Saying
+        # "unreachable" here sends you hunting a dead control plane when the
+        # real answer is that nothing is loaded.
+        if e.response is not None and e.response.status_code == 404:
+            return None, True
+        app.logger.warning('Jobs API error: %r', e)
+        return None, False
     except Exception as e:
         app.logger.warning('Jobs API unreachable: %r', e)
         return None, False
@@ -538,7 +547,9 @@ def stop():
     The template says so before the button is pressed.
     """
     jobs_api().delete(_job_url(), display_messages=False)
-    flash('Job stopped and removed. Reload it with: toolforge jobs load toolforge/job.yaml')
+    # The Build Service never clones the repo onto the bastion, so the path
+    # that works there is the curled copy at ~/job.yaml, not the repo's.
+    flash('Job stopped and removed. Reload it with: toolforge jobs load ~/job.yaml (see README if it is not on the bastion).')
     return redirect(url_for('index'))
 
 
@@ -546,7 +557,7 @@ def stop():
 
 @app.get('/replacements')
 def replacements():
-    path = os.path.join(config.SCRIPT_DIR, 'translation_replacements.tsv')
+    path = config.REPLACEMENTS_PATH
     try:
         text = Path(path).read_text(encoding='utf-8')
     except OSError:
@@ -557,7 +568,7 @@ def replacements():
 @app.post('/replacements')
 @requires_maintainer
 def save_replacements():
-    path = os.path.join(config.SCRIPT_DIR, 'translation_replacements.tsv')
+    path = config.REPLACEMENTS_PATH
     Path(path).write_text(request.form.get('text', ''), encoding='utf-8')
     flash('Replacements saved. They apply on the next run.')
     return redirect(url_for('replacements'))

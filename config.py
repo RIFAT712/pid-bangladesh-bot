@@ -75,6 +75,11 @@ MAINTAINERS_PATH = os.path.join(CREDS_DIR, 'maintainers.json')  # Who the owner 
 OAUTH_KEY_PATH = os.path.join(CREDS_DIR, 'oauth.key')        # Wikimedia OAuth consumer for panel edits
 WAYBACK_QUEUE_PATH = os.path.join(CREDS_DIR, 'wayback_pending.json')  # Persistent retry queue
 RUN_STATE_PATH = os.path.join(CREDS_DIR, 'run_state.json')   # Per-run outcomes, read by the panel
+# Name corrections the panel writes and the bot reads. It belongs here and not
+# next to main.py for the same reason as everything above it: the webservice and
+# the job are separate pods off one image, and $TOOL_DATA_DIR is the only
+# filesystem they share. Under SCRIPT_DIR a saved correction reached neither.
+REPLACEMENTS_PATH = os.path.join(CREDS_DIR, 'translation_replacements.tsv')
 
 # Toolforge job this bot runs as; the panel drives it through the Jobs API.
 JOB_NAME = 'pid-bot'
@@ -104,11 +109,15 @@ TRANSLATION_PROMPT = (
     'You may rearrange words or sentences for clarity, but retain all information. '
     'Do not add or omit anything. Only output the translation text and not a single else. '
     'Do not say description or Bengali text in your answer. do not have any bengali text in your answer just give me the translation, no options and no explanations. '
+    'The Bengali text is authoritative for every proper noun. Transliterate each personal name, '
+    'designation and place exactly as written there. Never replace a named person with whoever you '
+    'believe currently holds that post, and never correct a name against your own knowledge of who '
+    'is in office — if the caption names someone, that is the person in the photograph. '
     'Text: "{text}"'
 )
 
 TITLE_PROMPT = (
-    'Convert this image description (below) into a single Wikimedia Commons\u2013compliant filename (do NOT add the \u201cFile:\u201d prefix, or wikitext, or Title:, do not add filename extention). Follow Wikimedia Commons file naming guidelines: be descriptive, specific, precise, concise and neutral; include date as YYYY-MM-DD if present; avoid photographer/source-only names. Remove any political bias or references to previous governments and strip flattering/propagandistic/honorific language. Output ONLY the filename (no explanation), Regular Case, remove illegal filesystem characters but KEEP spaces and comma and hyphen, keep \u2264240 bytes, and do not add filename extention. '
+    'Convert this image description (below) into a single Wikimedia Commons\u2013compliant filename (do NOT add the \u201cFile:\u201d prefix, or wikitext, or Title:, do not add filename extention). Follow Wikimedia Commons file naming guidelines: be descriptive, specific, precise, concise and neutral; include date as YYYY-MM-DD if present; avoid photographer/source-only names. Strip flattering/propagandistic/honorific language. The description is authoritative for every personal name: copy each one exactly as it appears there, and never substitute, correct or modernise a name to match who you believe holds the post. Output ONLY the filename (no explanation), Regular Case, remove illegal filesystem characters but KEEP spaces and comma and hyphen, keep \u2264240 bytes, and do not add filename extention. '
     'Text: "{text}"'
 )
 

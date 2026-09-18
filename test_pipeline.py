@@ -1048,6 +1048,95 @@ def test_bulk_categorise_needs_a_commons_sign_in():
             "titles": ["File:A.jpg"], "categories": "X"}).status_code == 403
 
 
+
+def _http_error(status):
+    from requests import HTTPError, Response
+    r = Response()
+    r.status_code = status
+    return HTTPError(f"{status} Client Error", response=r)
+
+
+def test_a_missing_job_is_not_a_dead_control_plane():
+    """404 means the API answered "no such job" — reachable, nothing loaded.
+
+    Reporting that as unreachable sends whoever is on call hunting a control
+    plane that is fine, while the panel hides the one fact that matters: the
+    job is gone and no run will ever fire.
+    """
+    for exc, reachable in ((_http_error(404), True),
+                           (_http_error(500), False),
+                           (OSError("connection refused"), False)):
+        real = panel_app.jobs_api
+        panel_app.jobs_api = lambda: (_ for _ in ()).throw(exc)
+        try:
+            job, got = panel_app.fetch_job()
+        finally:
+            panel_app.jobs_api = real
+        assert job is None
+        assert got is reachable, f"{exc!r} reported reachable={got}"
+
+
+def test_a_missing_job_reads_as_not_loaded():
+    with tempfile.TemporaryDirectory() as tmp:
+        _panel_client(tmp, owner="RIFAT712")
+        real = panel_app.fetch_job
+        panel_app.fetch_job = lambda: (None, True)
+        try:
+            state = panel_app.page_context()["state"]
+        finally:
+            panel_app.fetch_job = real
+        assert state == "no-job", f"a missing job rendered as {state!r}"
+
+
+
+def test_replacements_live_where_both_pods_can_see_them():
+    """The panel and the bot are separate pods built from one image.
+
+    Only $TOOL_DATA_DIR is shared between them. A table resolved against
+    SCRIPT_DIR is written into the webservice container and read by nobody —
+    the operator's name corrections vanish on the next pod restart and never
+    reach a single run.
+    """
+    # Computed from the rule rather than read off config.CREDS_DIR, which
+    # earlier tests in this file mutate to a tmpdir and never restore.
+    expected = os.path.join(config.TOOL_DATA_DIR or config.SCRIPT_DIR,
+                            "translation_replacements.tsv")
+    assert config.REPLACEMENTS_PATH == expected, (
+        "replacements must live in $TOOL_DATA_DIR; SCRIPT_DIR is per-container "
+        "image storage that the job pod never sees")
+
+
+def test_what_the_panel_saves_the_bot_loads():
+    """The round trip the operator is relying on when they fix a wrong name."""
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712", granted=["Sadi"],
+                               signed_in_as="Sadi")
+        real = config.REPLACEMENTS_PATH
+        config.REPLACEMENTS_PATH = os.path.join(tmp, "translation_replacements.tsv")
+        try:
+            r = client.post("/replacements", data={
+                "text": "মোঃ নজরুল ইসলাম হীরু|||Shaikh Faridul Islam"})
+            assert r.status_code in (200, 302), r.status_code
+            pairs = translator.load_translation_replacements()
+        finally:
+            config.REPLACEMENTS_PATH = real
+        assert any(v == "Shaikh Faridul Islam" for _, v in pairs), (
+            "the panel saved the correction somewhere the bot does not read")
+
+
+def test_the_prompts_forbid_swapping_in_a_remembered_officeholder():
+    """Gemini knows who *used* to hold a post and will 'correct' the Bengali.
+
+    The Bangla caption is authoritative; nothing in the pipeline re-checks a
+    name after the model returns it, so the instruction is the only guard.
+    """
+    both = config.TRANSLATION_PROMPT + config.TITLE_PROMPT
+    assert "authoritative" in both.lower()
+    assert "previous governments" not in config.TITLE_PROMPT, (
+        "asking the model to reason about which government is current is what "
+        "invites it to swap in the officeholder it remembers")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

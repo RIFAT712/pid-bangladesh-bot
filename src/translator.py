@@ -15,12 +15,12 @@ from config import logger
 # ── Pre-translation replacement table ────────────────────────────────────────
 
 def load_translation_replacements():
-    """Load find/replace pairs from translation_replacements.tsv next to main.py.
+    """Load find/replace pairs from translation_replacements.tsv in $TOOL_DATA_DIR.
     Format: BengaliText|||EnglishReplacement  (one per line, # for comments)
     """
     SEPARATOR = '|||'
     replacements = []
-    tsv_path = os.path.join(config.SCRIPT_DIR, 'translation_replacements.tsv')
+    tsv_path = config.REPLACEMENTS_PATH
     if not os.path.exists(tsv_path):
         logger.info("No translation_replacements.tsv found, skipping pre-translation replacements")
         return replacements
