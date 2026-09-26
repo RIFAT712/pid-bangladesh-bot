@@ -1385,6 +1385,22 @@ def test_file_page_marks_wikidata_names_and_survives_the_replica_being_down():
             restore()
 
 
+def test_overview_links_recent_uploads_to_their_file_page_and_hides_the_log():
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712")
+        real = panel_app.commons.recent_uploads
+        panel_app.commons.recent_uploads = lambda limit=24: [
+            {"filename": "A b.jpg", "unique_id": "u1"}][:limit]
+        try:
+            strip = client.get("/partials/gallery").get_data(as_text=True)
+            page = client.get("/").get_data(as_text=True)
+        finally:
+            panel_app.commons.recent_uploads = real
+        assert "/file/File:A%20b.jpg" in strip or "/file/File:A b.jpg" in strip, strip
+        assert "<details" in page and "Technical log" in page
+        assert "Stderr" not in page
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

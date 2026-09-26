@@ -687,7 +687,7 @@ def save_admin():
 def partial_gallery():
     """Lazy-loaded so a slow Commons fetch never delays the status card."""
     try:
-        uploads = commons.recent_uploads(limit=24)
+        uploads = commons.recent_uploads(limit=8)
         error = ''
     except Exception as e:
         app.logger.warning('Commons unreachable: %r', e)
