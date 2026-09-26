@@ -115,8 +115,8 @@ def jobs_api():
     path = _kubeconfig_path()
     if path is None:
         raise RuntimeError(
-            'No Toolforge kubeconfig found. The panel can only reach the Jobs '
-            'API from inside the tool account.')
+            'No Toolforge kubeconfig found. The panel can only control the job '
+            'when it runs inside the tool account.')
     return ToolforgeClient(
         server=API_SERVER,
         kubeconfig=Kubeconfig.from_path(path),

@@ -659,8 +659,8 @@ def test_every_page_carries_the_navbar():
         client = _panel_client(tmp, owner="RIFAT712", signed_in_as="RIFAT712")
         for route in ("/", "/uploads", "/queue", "/replacements"):
             body = client.get(route).get_data(as_text=True)
-            assert 'class="nav"' in body, f"{route} has no navbar"
-            assert body.count('route active') == 1, \
+            assert 'class="tabs"' in body, f"{route} has no tabs"
+            assert body.count('tab active') == 1, \
                 f"{route} did not mark exactly one nav item as current"
 
 
@@ -1268,6 +1268,18 @@ def test_unreachable_toolforge_shows_the_reason_and_no_buttons():
         assert "can&#39;t reach Toolforge" in page or "can't reach Toolforge" in page, page[:800]
         assert "certificate expired" in page
         assert "Jobs API" not in page and "Stderr" not in page
+
+
+def test_every_page_has_the_tabs_and_codex():
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712")
+        for route in ("/", "/uploads", "/queue", "/replacements"):
+            body = client.get(route).get_data(as_text=True)
+            assert 'codex/codex.style.css' in body, route
+            for label in ("Overview", "Uploads", "Name corrections", "Queue"):
+                assert f">{label}</a>" in body, (route, label)
+            assert ">Access</a>" not in body, "Access tab shown to a visitor"
+            assert "https://" not in body.split("<body")[0], "external asset in <head>"
 
 
 if __name__ == "__main__":
