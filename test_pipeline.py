@@ -1691,6 +1691,26 @@ def test_stats_monthly_range_crosses_the_year_and_reads_the_daily_file():
     assert "10%" in v["gemini"]["summary"], v["gemini"]["summary"]
 
 
+def test_stats_page_renders_with_its_data_and_no_external_scripts():
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp)
+        real_path, config.STATS_PATH = config.STATS_PATH, os.path.join(tmp, "stats_daily.json")
+        real = panel_app.commons._uploads_raw
+        panel_app.commons._uploads_raw = lambda year, bucket: (
+            (("date", "2026-09-26"), ("filename", "a.jpg")),)
+        try:
+            body = client.get("/stats?range=7d").get_data(as_text=True)
+        finally:
+            panel_app.commons._uploads_raw = real
+            config.STATS_PATH = real_path
+        assert 'id="statsdata"' in body and 'chartjs/chart.umd.min.js' in body
+        for heading in ("Uploads", "Failures", "Review backlog", "Gemini"):
+            assert heading in body, heading
+        assert "No data yet" in body
+        assert 'src="http' not in body, "external script"
+        assert ">Stats</a>" in body
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

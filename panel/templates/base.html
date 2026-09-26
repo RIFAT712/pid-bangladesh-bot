@@ -31,6 +31,7 @@
     {% set here = request.endpoint %}
     {% for endpoint, label, also in [('index', 'Overview', []),
                                      ('uploads', 'Uploads', ['file_detail']),
+                                     ('stats', 'Stats', []),
                                      ('replacements', 'Name corrections', []),
                                      ('queue', 'Queue', [])]
            + ([('admin', 'Access', [])] if is_maintainer else []) %}

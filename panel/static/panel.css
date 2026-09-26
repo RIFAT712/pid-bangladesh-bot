@@ -664,3 +664,15 @@ button.suggest:focus-visible { background: var(--surface-alt); color: var(--acce
 /* ── Search ────────────────────────────────────────────────────────────── */
 .searchbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
 .searchbar input[type="search"] { flex: 1 1 16rem; }
+
+/* ── Stats ─────────────────────────────────────────────────────────────── */
+.stats-head { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; justify-content: space-between; }
+.stats-head h2 { margin: 0; }
+.rangepick { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.rangepick a { padding: 0.3rem 0.75rem; font-size: 0.875rem; color: var(--accent); text-decoration: none; }
+.rangepick a + a { border-left: 1px solid var(--border-strong); }
+.rangepick a.on { background: var(--accent); color: #fff; font-weight: 700; }
+.stats-summary { margin: 0.25rem 0 0.75rem; }
+.chartbox { position: relative; height: 240px; }
+.numbers { margin-top: 0.75rem; font-size: 0.875rem; }
+.numbers .cdx-table { max-height: 20rem; overflow: auto; }

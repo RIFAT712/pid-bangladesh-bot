@@ -88,10 +88,29 @@ def seed_wayback():
     ]), encoding='utf-8')
 
 
+def seed_stats():
+    """Three weeks of daily totals, so the Stats page draws real charts."""
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    days = {}
+    for ago in range(20, -1, -1):
+        d = today - datetime.timedelta(days=ago)
+        n = UPLOAD_PATTERN[ago % len(UPLOAD_PATTERN)]
+        days[d.isoformat()] = {
+            'runs': 24, 'uploaded': n * 3, 'duplicates': ago % 4,
+            'failed': {'download': int(ago % 3 == 0), 'ocr': int(ago % 5 == 0), 'translation': ago % 4,
+                       'title': 0, 'upload': int(ago % 7 == 0), 'other': 0},
+            'gemini': {'free': n * 6 + 10, 'paid': 3 if ago in FAILED_AT or ago % 6 == 0 else 0,
+                       'free_limit': 2 if ago % 6 == 0 else 0},
+            'backlog': {'review': 5000 + ago * 12, 'uncategorised': 8300 + ago * 5},
+        }
+    pathlib.Path(config.STATS_PATH).write_text(json.dumps(days), encoding='utf-8')
+
+
 def main():
     seed_runs()
     seed_log()
     seed_wayback()
+    seed_stats()
     pathlib.Path(config.SECRET_KEY_PATH).write_text('preview', encoding='utf-8')
 
     from panel import app as panel_app

@@ -29,8 +29,9 @@ from toolforge_weld.api_client import ToolforgeClient
 from toolforge_weld.kubernetes_config import Kubeconfig
 
 import config
-from panel import commons, corrections, wikiauth, wikitext
+from panel import commons, corrections, stats_view, wikiauth, wikitext
 from src import run_state, wayback
+from src import stats as bot_stats
 from src.name_resolver import resolve_names
 
 API_SERVER = 'https://api.svc.tools.eqiad1.wikimedia.cloud:30003/jobs/v1'
@@ -838,6 +839,21 @@ def uploads():
         years=[str(y) for y in range(datetime.now(timezone.utc).year, 2014, -1)],
         uncategorised_count=commons.category_size(commons.UNCATEGORISED, bucket),
         thumb=commons.thumb_url)
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+@app.get('/stats', endpoint='stats')
+def stats_page():
+    today = datetime.now(timezone.utc).date()
+    bucket = commons._bucket()
+    rows = []
+    # 12 months plus the 12 before them, for the comparison, can span three registries.
+    for year in (today.year - 2, today.year - 1, today.year):
+        rows += [dict(t) for t in commons._uploads_raw(year, bucket)]
+    view = stats_view.build(bot_stats.load(), rows, request.args.get('range', '30d'), today)
+    return render_template('stats.html', view=view, ranges=[
+        ('7d', '7 days'), ('30d', '30 days'), ('12m', '12 months')])
 
 
 # One page of the queue. Anything larger risks the gunicorn timeout, because
