@@ -1137,6 +1137,78 @@ def test_the_prompts_forbid_swapping_in_a_remembered_officeholder():
         "invites it to swap in the officeholder it remembers")
 
 
+# ── Wikidata name resolution ──────────────────────────────────────────────────
+
+def _resolve_with(names, text):
+    """Run resolve_names against a fake replica; returns (text, matches, keys queried)."""
+    from src import name_resolver
+    asked = []
+    real = name_resolver._lookup
+    def fake(keys):
+        asked.extend(keys)
+        return [(bn, qid, en, 1) for bn, (en, qid) in names.items()]
+    name_resolver._lookup = fake
+    os.environ.setdefault("TOOL_REPLICA_USER", "test")
+    try:
+        return (*name_resolver.resolve_names(text), asked)
+    finally:
+        name_resolver._lookup = real
+
+
+def test_name_with_a_case_ending_is_replaced_and_keeps_the_ending():
+    out, matches, _ = _resolve_with(
+        {"মুহাম্মদ ইউনূস": ("Muhammad Yunus", "Q1")},
+        "প্রধান উপদেষ্টা মুহাম্মদ ইউনূসের সাথে বৈঠক")
+    assert out == "প্রধান উপদেষ্টা Muhammad Yunusের সাথে বৈঠক", out
+    assert matches == [("মুহাম্মদ ইউনূস", "Muhammad Yunus", "Q1")]
+
+
+def test_the_longest_name_wins_an_overlap():
+    out, _, _ = _resolve_with(
+        {"আব্দুল হামিদ": ("Abdul Hamid", "Q2"),
+         "মোহাম্মদ আব্দুল হামিদ": ("Mohammad Abdul Hamid", "Q3")},
+        "রাষ্ট্রপতি মোহাম্মদ আব্দুল হামিদ আজ")
+    assert out == "রাষ্ট্রপতি Mohammad Abdul Hamid আজ", out
+
+
+def test_single_words_and_windows_across_punctuation_are_never_looked_up():
+    _, _, asked = _resolve_with({}, "হাসিনা, ইউনূস ঢাকায়")
+    assert all(" " in k for k in asked), asked
+    assert "হাসিনা ইউনূস" not in asked, "matched across a comma"
+
+
+def test_ambiguous_label_goes_to_the_most_sitelinked_person():
+    from src.name_resolver import _choose
+    rows = [("শেখ হাসিনা", "Q10", "Sheikh Hasina", 150),
+            ("শেখ হাসিনা", "Q11", "Sheikh Hasina (singer)", 2)]
+    assert _choose(rows) == {"শেখ হাসিনা": ("Sheikh Hasina", "Q10")}
+
+
+def test_replica_failure_passes_the_text_through():
+    from src import name_resolver
+    real = name_resolver._lookup
+    def boom(keys):
+        raise RuntimeError("replica down")
+    name_resolver._lookup = boom
+    os.environ.setdefault("TOOL_REPLICA_USER", "test")
+    try:
+        text = "মুহাম্মদ ইউনূস ঢাকায়"
+        assert name_resolver.resolve_names(text) == (text, [])
+    finally:
+        name_resolver._lookup = real
+
+
+def test_cropper_is_unchanged():
+    """The cropper is tuned over thousands of PID images. If you changed it on
+    purpose, update the hash; if not, revert src/cropper.py."""
+    import hashlib
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "src", "cropper.py"), "rb") as f:
+        digest = hashlib.sha256(f.read().replace(b"\r\n", b"\n")).hexdigest()
+    assert digest == "6c8f9931497da40dd97981e1dfb4b47432ab72ce492ae4fd1350ef6c23fac9e9", (
+        "src/cropper.py changed")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

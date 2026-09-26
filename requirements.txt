@@ -11,6 +11,7 @@ google-auth-httplib2
 google-genai
 pywikibot
 urllib3
+pymysql            # Wikidata replica: people's English names (src/name_resolver.py)
 
 # ── Control panel (web: process type) ─────────────────────────────────────────
 flask

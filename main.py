@@ -29,6 +29,7 @@ import credentials
 from src import run_state, wayback
 from src.commons_log import log_to_commons
 from src.image_processor import ImageProcessor
+from src.name_resolver import resolve_names
 from src.scraper import scrape_data
 from src.translator import (
     apply_translation_replacements,
@@ -245,6 +246,9 @@ def _pipeline(run):
                 bengali_text = apply_translation_replacements(
                     bengali_text_raw, _translation_replacements)
                 print(f"After pre-translation replacements: {bengali_text}")
+                bengali_text, name_matches = resolve_names(bengali_text)
+                for bn, en, qid in name_matches:
+                    print(f"Wikidata: {bn} → {en} ({qid})")
                 translation, trans_status = translate_text(
                     genai_client, vertex_client, translate_client, bengali_text, idx + 1)
                 print(f"Translation Data: {translation}")
