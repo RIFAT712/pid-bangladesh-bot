@@ -704,3 +704,10 @@ button.suggest:focus-visible { background: var(--surface-alt); color: var(--acce
 .bulkcount { font-weight: 600; font-size: 0.88rem; align-self: center; }
 .bulkfield { flex: 1 1 18rem; }
 .bulkfield textarea { width: 100%; font-size: 0.85rem; }
+
+/* ── Name corrections ──────────────────────────────────────────────────── */
+.corr-add, .corr-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0; }
+.corr-add { margin-bottom: 1rem; }
+.corr-add input, .corr-row input { flex: 1 1 12rem; }
+.corr-row input[lang="bn"], .corr-add input[lang="bn"] { font-family: var(--bn); }
+.corr-filter { width: 100%; max-width: 24rem; margin-bottom: 0.75rem; }

@@ -14,11 +14,26 @@ from config import logger
 
 # ── Pre-translation replacement table ────────────────────────────────────────
 
-def load_translation_replacements():
-    """Load find/replace pairs from translation_replacements.tsv in $TOOL_DATA_DIR.
-    Format: BengaliText|||EnglishReplacement  (one per line, # for comments)
+SEPARATOR = '|||'
+
+
+def parse_replacement_line(line):
+    """(bengali, english, user, date) from one table line, or None.
+
+    Format: bengali|||english|||user|||YYYY-MM-DD — the last two are optional
+    and only there so the panel can show who added a correction and when.
     """
-    SEPARATOR = '|||'
+    line = line.rstrip('\r\n')
+    if not line.strip() or line.lstrip().startswith('#') or SEPARATOR not in line:
+        return None
+    parts = [p.strip() for p in line.split(SEPARATOR)] + ['', '']
+    if not parts[0]:
+        return None
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def load_translation_replacements():
+    """Load find/replace pairs from translation_replacements.tsv in $TOOL_DATA_DIR."""
     replacements = []
     tsv_path = config.REPLACEMENTS_PATH
     if not os.path.exists(tsv_path):
@@ -27,18 +42,13 @@ def load_translation_replacements():
     try:
         with open(tsv_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
-                line = line.rstrip('\n')
-                if not line or line.startswith('#'):
+                parsed = parse_replacement_line(line)
+                if parsed is None:
+                    if line.strip() and not line.lstrip().startswith('#'):
+                        logger.warning(
+                            f"translation_replacements.tsv line {line_num}: missing '{SEPARATOR}' separator, skipping: {line!r}")
                     continue
-                if SEPARATOR not in line:
-                    logger.warning(
-                        f"translation_replacements.tsv line {line_num}: missing '{SEPARATOR}' separator, skipping: {line!r}")
-                    continue
-                find_text, replace_text = line.split(SEPARATOR, 1)
-                find_text = find_text.strip()
-                replace_text = replace_text.strip()
-                if find_text:
-                    replacements.append((find_text, replace_text))
+                replacements.append(parsed[:2])
         logger.info(f"Loaded {len(replacements)} translation replacements from {tsv_path}")
     except Exception as e:
         logger.error(f"Error loading translation_replacements.tsv: {e}")

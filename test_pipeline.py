@@ -1143,19 +1143,54 @@ def test_replacements_live_where_both_pods_can_see_them():
 def test_what_the_panel_saves_the_bot_loads():
     """The round trip the operator is relying on when they fix a wrong name."""
     with tempfile.TemporaryDirectory() as tmp:
-        client = _panel_client(tmp, owner="RIFAT712", granted=["Sadi"],
-                               signed_in_as="Sadi")
+        client = _panel_client(tmp, owner="RIFAT712", granted=["Sadi"], signed_in_as="Sadi")
         real = config.REPLACEMENTS_PATH
         config.REPLACEMENTS_PATH = os.path.join(tmp, "translation_replacements.tsv")
         try:
             r = client.post("/replacements", data={
-                "text": "মোঃ নজরুল ইসলাম হীরু|||Shaikh Faridul Islam"})
-            assert r.status_code in (200, 302), r.status_code
+                "action": "add", "bn": "মোঃ নজরুল ইসলাম হীরু", "en": "Shaikh Faridul Islam"})
+            assert r.status_code == 302, r.status_code
             pairs = translator.load_translation_replacements()
         finally:
             config.REPLACEMENTS_PATH = real
-        assert any(v == "Shaikh Faridul Islam" for _, v in pairs), (
-            "the panel saved the correction somewhere the bot does not read")
+        assert ("মোঃ নজরুল ইসলাম হীরু", "Shaikh Faridul Islam") in pairs, pairs
+
+
+def test_correction_metadata_never_leaks_into_the_translation():
+    assert translator.parse_replacement_line("ক খ|||Ka Kha|||Sadi|||2026-09-26") == \
+        ("ক খ", "Ka Kha", "Sadi", "2026-09-26")
+    assert translator.parse_replacement_line("ক খ|||Ka Kha") == ("ক খ", "Ka Kha", "", "")
+    assert translator.parse_replacement_line("# note") is None
+    assert translator.parse_replacement_line("no separator") is None
+
+
+def test_corrections_add_edit_delete_keep_comments_and_refuse_duplicates():
+    from panel import corrections
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "t.tsv")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("# keep me\nক খ|||Ka Kha\n")
+        assert corrections.add(p, "গ ঘ", "Ga Gha", "Sadi") is True
+        assert corrections.add(p, "ক খ", "Other", "Sadi") is False, "duplicate Bengali added"
+        assert corrections.update(p, "ক খ", "ক খ", "Ka Kha Fixed", "RIFAT712") is True
+        assert corrections.delete(p, "গ ঘ") is True
+        text = open(p, encoding="utf-8").read()
+        assert text.startswith("# keep me\n"), text
+        assert [(r["bn"], r["en"], r["user"]) for r in corrections.rows(p)] == \
+            [("ক খ", "Ka Kha Fixed", "RIFAT712")]
+        for bad in ("a|||b", "two\nlines", ""):
+            try:
+                corrections.add(p, "চ ছ", bad, "Sadi")
+                raise AssertionError(f"accepted {bad!r}")
+            except ValueError:
+                pass
+
+
+def test_only_maintainers_change_name_corrections():
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712", signed_in_as="RandomPasserby")
+        r = client.post("/replacements", data={"action": "add", "bn": "ক খ", "en": "X"})
+        assert r.status_code == 403
 
 
 def test_the_prompts_forbid_swapping_in_a_remembered_officeholder():

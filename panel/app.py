@@ -27,7 +27,7 @@ from toolforge_weld.api_client import ToolforgeClient
 from toolforge_weld.kubernetes_config import Kubeconfig
 
 import config
-from panel import commons, wikiauth, wikitext
+from panel import commons, corrections, wikiauth, wikitext
 from src import run_state, wayback
 
 API_SERVER = 'https://api.svc.tools.eqiad1.wikimedia.cloud:30003/jobs/v1'
@@ -608,20 +608,31 @@ def stop():
 
 @app.get('/replacements')
 def replacements():
-    path = config.REPLACEMENTS_PATH
-    try:
-        text = Path(path).read_text(encoding='utf-8')
-    except OSError:
-        text = ''
-    return render_template('replacements.html', text=text)
+    return render_template('replacements.html',
+                           rows=corrections.rows(config.REPLACEMENTS_PATH))
 
 
 @app.post('/replacements')
 @requires_maintainer
 def save_replacements():
-    path = config.REPLACEMENTS_PATH
-    Path(path).write_text(request.form.get('text', ''), encoding='utf-8')
-    flash('Replacements saved. They apply on the next run.')
+    path, form = config.REPLACEMENTS_PATH, request.form
+    action = form.get('action')
+    try:
+        if action == 'add':
+            ok = corrections.add(path, form.get('bn', ''), form.get('en', ''), current_user())
+            flash('Added. It applies from the next run.' if ok
+                  else 'That Bengali already has a correction. Edit it instead.')
+        elif action == 'update':
+            corrections.update(path, form.get('old_bn', ''), form.get('bn', ''),
+                               form.get('en', ''), current_user())
+            flash('Saved. It applies from the next run.')
+        elif action == 'delete':
+            corrections.delete(path, form.get('bn', ''))
+            flash('Deleted.')
+        else:
+            abort(400)
+    except ValueError:
+        flash("Not saved: both fields are needed, on one line, without '|||'.")
     return redirect(url_for('replacements'))
 
 
