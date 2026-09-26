@@ -62,12 +62,6 @@ body {
 }
 
 /* ── State ─────────────────────────────────────────────────────────────── */
-.jobname {
-  font-family: var(--mono);
-  font-size: 0.78rem;
-  color: var(--muted);
-  margin: 0 0 0.55rem;
-}
 
 h1 {
   margin: 0;
@@ -77,21 +71,6 @@ h1 {
   line-height: 1.05;
   color: var(--text);
 }
-
-.pill {
-  display: inline-block;
-  border-radius: 999px;
-  padding: 0.2rem 0.8rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  background: var(--surface-alt);
-  color: var(--muted);
-  vertical-align: 0.5rem;
-  margin-left: 0.6rem;
-}
-.pill-running { background: var(--ok-bg);  color: var(--ok-text); }
-.pill-failed  { background: var(--bad-bg); color: var(--bad-text); }
-.pill-warn    { background: var(--warn-bg); color: var(--warn-text); }
 
 .since { margin: 0.7rem 0 0; color: var(--muted); }
 .since b { color: var(--text); font-weight: 600; }
@@ -107,17 +86,7 @@ h1 {
 }
 
 /* ── Numbers ───────────────────────────────────────────────────────────── */
-.stats { display: flex; flex-wrap: wrap; gap: 0 2.75rem; margin-top: 1.5rem; }
-.stat  { display: flex; flex-direction: column; }
 
-.stat-n {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 1.75rem;
-  line-height: 1.15;
-}
-.stat-n.is-zero  { color: var(--border); }
-.stat-n.is-alert { color: var(--bad-text); }
 .stat-l { font-size: 0.8rem; color: var(--muted); }
 
 /* ── Run strip ─────────────────────────────────────────────────────────── */
@@ -229,9 +198,6 @@ h2 { margin: 0 0 0.2rem; font-size: 1rem; font-weight: 600; }
 /* ── Forms ─────────────────────────────────────────────────────────────── */
 .prose { max-width: 62ch; color: var(--muted); margin: 0 0 0.9rem; }
 
-.signin { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-.signin label { font-size: 0.85rem; color: var(--muted); width: 100%; }
-
 input, textarea, select {
   font: inherit; font-size: 0.9rem; color: var(--text);
   background: var(--surface);
@@ -247,25 +213,14 @@ input:focus, textarea:focus, select:focus {
 .editor textarea { font-family: var(--mono), var(--bn); font-size: 0.85rem; line-height: 1.7; }
 .editor-actions { display: flex; gap: 1.2rem; align-items: center; }
 
-.notices {
-  list-style: none;
-  margin: 1.4rem auto 0;
-  padding: 0.7rem 1rem;
-  background: var(--ok-bg);
-  color: var(--ok-text);
-  border-radius: var(--radius-sm);
-  font-size: 0.88rem;
-}
-
 code { font-family: var(--mono); font-size: 0.88em; }
 
 @media (max-width: 620px) {
   .card { padding: 1.2rem 1.1rem; }
-  .stats { gap: 0 1.5rem; }
-  .stat-n { font-size: 1.35rem; }
+
   #log { height: 16rem; }
   .beat { height: 44px; }
-  .pill { display: block; margin: 0.5rem 0 0; vertical-align: 0; width: fit-content; }
+
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -426,8 +381,6 @@ main.wrap { padding-top: 0.2rem; }
 .ln.good { color: var(--ok-text); }
 .ln.head { color: var(--accent); font-weight: 600; }
 
-
-.edithead { margin: 1.4rem 0 0.6rem; font-size: 0.95rem; font-weight: 600; }
 .editor .check { margin: 0.1rem 0; white-space: normal; }
 
 /* ── Work queues ───────────────────────────────────────────────────────── */
@@ -618,10 +571,6 @@ button.suggest:focus-visible { background: var(--surface-alt); color: var(--acce
 .suggest-empty { padding: 0.3rem 0.5rem; margin: 0; }
 
 /* A maintainer can stop the job, so the pill says which account carries that. */
-.account-pill.account-admin {
-  color: var(--accent);
-  border-color: var(--accent);
-}
 
 /* ── Access ────────────────────────────────────────────────────────────────
    A list of people, not a table of records: the name is what you scan for, so
