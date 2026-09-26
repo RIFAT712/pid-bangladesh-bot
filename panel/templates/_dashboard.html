@@ -1,72 +1,58 @@
-{# Terminal header. Everything that fits on a line shares one. #}
+{# Status box: one sentence, then only the buttons that make sense right now. #}
 <div id="dashboard" hx-get="{{ url_for('partial_dashboard') }}"
      hx-trigger="every 5s" hx-swap="outerHTML">
 
-  <div class="statusbar">
-    <span class="jobname">pid-bot</span>
-    <span class="state state-{{ state }}">{{ state_label }}</span>
-    {% if state == 'running' %}<span class="pill pill-running">live</span>
-    {% elif state == 'failed' %}<span class="pill pill-failed">needs a look</span>{% endif %}
+  <div class="cdx-message cdx-message--block cdx-message--{{ status.tone }} statusbox"
+       role="status" aria-live="polite">
+    <span class="cdx-message__icon"></span>
+    <div class="cdx-message__content">
+      <p class="status-sentence">{{ status.sentence }}</p>
+      {% if api_error %}<p class="status-meta">Reason: {{ api_error }}</p>{% endif %}
+      <p class="status-meta">
+        {% if started_ago %}Last run started {{ started_ago }}{% if duration %}, running for {{ duration }}{% endif %}.
+        {% else %}No run recorded yet.{% endif %}
+        {% if next_in and not paused %}Next run in {{ next_in }}.{% endif %}
+      </p>
 
-    <span class="statusmeta">
-      {% if started_ago %}started {{ started_ago }}{% if duration %}, running {{ duration }}{% endif %}
-      {% else %}no run recorded{% endif %}
-      {% if paused %}— schedule paused
-      {% elif next_in %}— next in {{ next_in }}{% endif %}
-    </span>
-
-    {% if is_maintainer and state == 'no-job' %}
-      <span class="controls">
-        <form method="post" action="{{ url_for('start') }}">
-          <button type="submit">Start job</button>
-        </form>
-      </span>
-    {% elif is_maintainer %}
-      <span class="controls">
-        <form method="post" action="{{ url_for('run_now') }}">
-          <button type="submit">Run now</button>
-        </form>
-        {% if paused %}
-          <form method="post" action="{{ url_for('resume') }}">
-            <button type="submit" class="quiet">Resume schedule</button>
-          </form>
-        {% else %}
-          <form method="post" action="{{ url_for('pause') }}">
-            <button type="submit" class="quiet">Pause schedule</button>
-          </form>
-        {% endif %}
-        <form method="post" action="{{ url_for('stop') }}"
-              onsubmit="return confirm('Stop the job and kill the running pod?\n\nUploads already made in this run are not yet recorded in PIDDateData — that write happens once, at the end. Killing now means those images are downloaded, OCR'd and translated again next run, then rejected as duplicates.\n\nTo quiet the bot without losing work, use Pause schedule instead.')">
-          <button type="submit" class="danger">Stop job</button>
-        </form>
-      </span>
-    {% else %}
-      <span class="controls">
-        {% if not controls_enabled %}
-          <span class="hint">Controls are off: no maintainers configured.</span>
-        {% elif not wiki_user %}
-          <a class="route" href="{{ url_for('oauth_start') }}">Sign in to run the job</a>
-        {% else %}
-          <span class="hint">{{ wiki_user }} is not a maintainer of this tool.</span>
-        {% endif %}
-      </span>
-    {% endif %}
+      {% if is_maintainer and status.actions %}
+        <div class="status-actions">
+          {% for a in status.actions %}
+            {% if a == 'start' %}
+              <form method="post" action="{{ url_for('start') }}"><button type="submit" class="primary">Start job</button></form>
+            {% elif a == 'run' %}
+              <form method="post" action="{{ url_for('run_now') }}"><button type="submit" class="primary">Run now</button></form>
+            {% elif a == 'pause' %}
+              <form method="post" action="{{ url_for('pause') }}"><button type="submit">Pause schedule</button></form>
+            {% elif a == 'resume' %}
+              <form method="post" action="{{ url_for('resume') }}"><button type="submit" class="primary">Resume schedule</button></form>
+            {% elif a == 'stop' %}
+              <form method="post" action="{{ url_for('stop') }}"
+                    onsubmit="return confirm('Stop the job and end the run in progress?\n\nPhotos already uploaded in this run are only recorded at the end, so they will be processed again next run and skipped as duplicates.\n\nTo quiet the bot without losing work, use Pause schedule instead.')">
+                <button type="submit" class="danger">Stop job</button>
+              </form>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% elif not is_maintainer %}
+        <p class="status-meta">
+          {% if not controls_enabled %}Controls are off: no maintainers are set up.
+          {% elif not wiki_user %}<a href="{{ url_for('oauth_start') }}">Sign in</a> to run the job.
+          {% else %}{{ wiki_user }} is not a maintainer of this tool.{% endif %}
+        </p>
+      {% endif %}
+    </div>
   </div>
 
-  <div class="countbar">
-    {% if latest %}
-      <span class="count"><b class="{% if not latest.uploaded %}is-zero{% endif %}">{{ latest.uploaded }}</b> uploaded</span>
-      <span class="count"><b class="{% if not latest.duplicates %}is-zero{% endif %}">{{ latest.duplicates }}</b> already on Commons</span>
-      <span class="count"><b class="{% if latest.failed %}is-alert{% else %}is-zero{% endif %}">{{ latest.failed }}</b> failed</span>
-      <span class="count"><b class="{% if not latest.scraped %}is-zero{% endif %}">{{ latest.scraped }}</b> images seen</span>
-    {% endif %}
-    {% if not api_reachable %}
-      <span class="inline-warn">Jobs API unreachable — these are the bot's own
-        records, and the controls won't act until it's back.</span>
-    {% endif %}
-  </div>
-
+  {% if latest %}
+    <dl class="counts">
+      <div><dt>Uploaded</dt><dd>{{ latest.uploaded }}</dd></div>
+      <div><dt>Already on Commons</dt><dd>{{ latest.duplicates }}</dd></div>
+      <div><dt>Failed</dt><dd class="{% if latest.failed %}is-alert{% endif %}">{{ latest.failed }}</dd></div>
+      <div><dt>Photos seen</dt><dd>{{ latest.scraped }}</dd></div>
+    </dl>
+  {% endif %}
   {% if latest and latest.error %}
-    <p class="failure">{{ latest.error }}</p>
+    <div class="cdx-message cdx-message--block cdx-message--error"><span class="cdx-message__icon"></span>
+      <div class="cdx-message__content">{{ latest.error }}</div></div>
   {% endif %}
 </div>

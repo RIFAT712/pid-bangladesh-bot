@@ -37,11 +37,11 @@ API_SERVER = 'https://api.svc.tools.eqiad1.wikimedia.cloud:30003/jobs/v1'
 STATE_LABELS = {
     'running': 'Running',
     'pending': 'Starting',
-    'succeeded': 'Idle, last run finished cleanly',
+    'succeeded': 'Waiting',
     'failed': 'Last run failed',
     'unknown': 'Status unavailable',
-    'no-job': 'Not loaded on Toolforge',
-    'api-down': "Can't reach the Jobs API",
+    'no-job': 'Stopped',
+    'api-down': "Can't reach Toolforge",
 }
 
 # Toolforge has no "disable this cronjob" flag, so pausing means rescheduling it
@@ -144,25 +144,49 @@ def job_definition():
 
 
 def fetch_job():
-    """Returns (job, reachable).
+    """Returns (job, reachable, error).
 
     `reachable` separates "the API told us there is no such job" from "we could
     not ask" — they look identical from a None return but mean opposite things
-    to whoever is reading the page at 3am.
+    to whoever is reading the page at 3am. `error` is the reason we could not
+    ask, shown on the page, because "unreachable" alone sends you hunting.
     """
     try:
-        return jobs_api().get(_job_url(), display_messages=False).get('job'), True
+        return jobs_api().get(_job_url(), display_messages=False).get('job'), True, ''
     except HTTPError as e:
         # A 404 is the API answering, not failing: there is no such job. Saying
         # "unreachable" here sends you hunting a dead control plane when the
         # real answer is that nothing is loaded.
         if e.response is not None and e.response.status_code == 404:
-            return None, True
+            return None, True, ''
         app.logger.warning('Jobs API error: %r', e)
-        return None, False
+        return None, False, str(e)
     except Exception as e:
         app.logger.warning('Jobs API unreachable: %r', e)
-        return None, False
+        return None, False, str(e)
+
+
+def status_view(state, paused, reachable, latest):
+    """One sentence and the buttons that make sense, for the status box."""
+    if not reachable:
+        return {'tone': 'error', 'actions': [],
+                'sentence': "The panel can't reach Toolforge right now, so the buttons won't work."}
+    if state == 'no-job':
+        return {'tone': 'notice', 'actions': ['start'],
+                'sentence': 'Stopped. Nothing will run until you start it.'}
+    if state in ('running', 'pending'):
+        n = (latest or {}).get('uploaded', 0) if (latest or {}).get('status') == 'running' else 0
+        so_far = f' {n} photo{"" if n == 1 else "s"} uploaded so far.' if n else ''
+        return {'tone': 'success', 'actions': ['pause', 'stop'],
+                'sentence': 'Running now.' + so_far}
+    if paused:
+        return {'tone': 'warning', 'actions': ['run', 'resume', 'stop'],
+                'sentence': 'Paused. Nothing runs on schedule until you resume it.'}
+    if state == 'failed':
+        return {'tone': 'error', 'actions': ['run', 'pause', 'stop'],
+                'sentence': 'The last run failed. The errors are in the technical log below.'}
+    return {'tone': 'success', 'actions': ['run', 'pause', 'stop'],
+            'sentence': 'Waiting for the next run. The last one finished cleanly.'}
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -419,7 +443,7 @@ def heartbeat(records, slots=72):
 
 
 def page_context():
-    job, api_reachable = fetch_job()
+    job, api_reachable, api_error = fetch_job()
     records = run_state.load()
     latest = records[-1] if records else None
     status = (job or {}).get('status', {})
@@ -458,6 +482,8 @@ def page_context():
             datetime.now(timezone.utc) - _parse(latest.get('started_at')))
             if latest and _parse(latest.get('started_at')) else ''),
         'ticks': heartbeat(records),
+        'api_error': api_error,
+        'status': status_view(state, schedule == NEVER_FIRES, api_reachable, latest),
     }
 
 
@@ -545,7 +571,7 @@ def start():
 @app.post('/pause')
 @requires_maintainer
 def pause():
-    job, _ = fetch_job()
+    job, _, _ = fetch_job()
     if not job:
         abort(404, 'No pid-bot job is loaded.')
     session['schedule_before_pause'] = job.get('schedule')

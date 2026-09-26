@@ -1103,7 +1103,7 @@ def test_a_missing_job_is_not_a_dead_control_plane():
         real = panel_app.jobs_api
         panel_app.jobs_api = lambda: (_ for _ in ()).throw(exc)
         try:
-            job, got = panel_app.fetch_job()
+            job, got, _ = panel_app.fetch_job()
         finally:
             panel_app.jobs_api = real
         assert job is None
@@ -1114,7 +1114,7 @@ def test_a_missing_job_reads_as_not_loaded():
     with tempfile.TemporaryDirectory() as tmp:
         _panel_client(tmp, owner="RIFAT712")
         real = panel_app.fetch_job
-        panel_app.fetch_job = lambda: (None, True)
+        panel_app.fetch_job = lambda: (None, True, "")
         try:
             state = panel_app.page_context()["state"]
         finally:
@@ -1241,6 +1241,33 @@ def test_cropper_is_unchanged():
         digest = hashlib.sha256(f.read().replace(b"\r\n", b"\n")).hexdigest()
     assert digest == "6c8f9931497da40dd97981e1dfb4b47432ab72ce492ae4fd1350ef6c23fac9e9", (
         "src/cropper.py changed")
+
+
+# ── Panel redesign ────────────────────────────────────────────────────────────
+
+def test_status_box_offers_only_what_makes_sense():
+    sv = panel_app.status_view
+    assert sv("no-job", False, True, None)["actions"] == ["start"]
+    assert sv("running", False, True, {"status": "running", "uploaded": 3})["actions"] == ["pause", "stop"]
+    assert "3 photos" in sv("running", False, True, {"status": "running", "uploaded": 3})["sentence"]
+    assert sv("succeeded", True, True, None)["actions"] == ["run", "resume", "stop"]
+    assert sv("succeeded", False, True, None)["actions"] == ["run", "pause", "stop"]
+    assert sv("failed", False, True, None)["tone"] == "error"
+
+
+def test_unreachable_toolforge_shows_the_reason_and_no_buttons():
+    """The bot's record can say 'running' while the API is down; buttons would 500."""
+    down = panel_app.status_view("running", False, False, {"status": "running"})
+    assert down["actions"] == [] and down["tone"] == "error"
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712", signed_in_as="RIFAT712")
+        def boom():
+            raise RuntimeError("certificate expired")
+        panel_app.jobs_api = boom
+        page = client.get("/").get_data(as_text=True)
+        assert "can&#39;t reach Toolforge" in page or "can't reach Toolforge" in page, page[:800]
+        assert "certificate expired" in page
+        assert "Jobs API" not in page and "Stderr" not in page
 
 
 if __name__ == "__main__":

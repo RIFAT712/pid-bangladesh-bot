@@ -9,7 +9,7 @@
     <a class="seg {% if stream == 'err' %}on{% endif %}"
        href="{{ url_for('index', stream='err', q=query or None,
                         level='errors' if errors_only else None,
-                        live=None if live else '0') }}">Stderr</a>
+                        live=None if live else '0') }}">Errors</a>
   </span>
 
   <input type="hidden" name="stream" value="{{ stream }}">
