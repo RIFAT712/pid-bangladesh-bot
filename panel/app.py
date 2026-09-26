@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import humanize
+import yaml
 from croniter import croniter
 from flask import (Flask, Response, abort, flash, redirect, render_template,
                    request, session, url_for)
@@ -125,6 +126,21 @@ def jobs_api():
 
 def _job_url(suffix=''):
     return f'/tool/{config.TOOL_NAME}/jobs/{config.JOB_NAME}{suffix}'
+
+
+# job.yaml speaks the CLI's dialect; the API names three fields differently.
+_YAML_TO_API = {'command': 'cmd', 'image': 'imagename', 'mem': 'memory'}
+
+
+def job_definition():
+    """The pid-bot job as the Jobs API's create call wants it, read from the
+    job.yaml shipped in the image — the same file `toolforge jobs load` uses."""
+    path = os.path.join(config.SCRIPT_DIR, 'toolforge', 'job.yaml')
+    with open(path, encoding='utf-8') as f:
+        job = next(j for j in yaml.safe_load(f) if j['name'] == config.JOB_NAME)
+    body = {_YAML_TO_API.get(k, k): v for k, v in job.items()}
+    body['job_type'] = 'scheduled' if body.get('schedule') else 'one-off'
+    return body
 
 
 def fetch_job():
@@ -515,6 +531,17 @@ def run_now():
     return redirect(url_for('index'))
 
 
+@app.post('/start')
+@requires_maintainer
+def start():
+    """Re-create the job Stop deleted, then run it once straight away."""
+    jobs_api().post(f'/tool/{config.TOOL_NAME}/jobs/', json=job_definition(),
+                    display_messages=False)
+    jobs_api().post(_job_url('/restart'), display_messages=False)
+    flash('Job loaded and started.')
+    return redirect(url_for('index'))
+
+
 @app.post('/pause')
 @requires_maintainer
 def pause():
@@ -547,9 +574,7 @@ def stop():
     The template says so before the button is pressed.
     """
     jobs_api().delete(_job_url(), display_messages=False)
-    # The Build Service never clones the repo onto the bastion, so the path
-    # that works there is the curled copy at ~/job.yaml, not the repo's.
-    flash('Job stopped and removed. Reload it with: toolforge jobs load ~/job.yaml (see README if it is not on the bastion).')
+    flash('Job stopped and removed. Press Start job to bring it back.')
     return redirect(url_for('index'))
 
 

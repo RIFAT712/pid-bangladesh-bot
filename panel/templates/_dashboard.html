@@ -15,7 +15,13 @@
       {% elif next_in %}— next in {{ next_in }}{% endif %}
     </span>
 
-    {% if is_maintainer %}
+    {% if is_maintainer and state == 'no-job' %}
+      <span class="controls">
+        <form method="post" action="{{ url_for('start') }}">
+          <button type="submit">Start job</button>
+        </form>
+      </span>
+    {% elif is_maintainer %}
       <span class="controls">
         <form method="post" action="{{ url_for('run_now') }}">
           <button type="submit">Run now</button>

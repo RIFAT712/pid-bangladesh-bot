@@ -396,6 +396,40 @@ def test_a_maintainer_passes_the_gate():
         assert client.post("/run").status_code not in (403, 503)
 
 
+class FakeJobsApi:
+    """The Jobs API after Stop deleted the job: GET 404s, calls are recorded."""
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, **kw):
+        from requests import HTTPError, Response
+        r = Response()
+        r.status_code = 404
+        raise HTTPError(response=r)
+
+    def post(self, url, **kw):
+        self.calls.append(("post", url, kw.get("json")))
+        return {}
+
+
+def test_a_stopped_job_can_be_started_again_from_the_web():
+    """Stop deletes the job, so Run now has nothing to restart. Start must
+    re-create it from job.yaml and run it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712", signed_in_as="RIFAT712")
+        api = FakeJobsApi()
+        panel_app.jobs_api = lambda: api
+        page = client.get("/").get_data(as_text=True)
+        assert "Start job" in page, "no way to start a stopped job from the web"
+        assert client.post("/start").status_code == 302
+        (verb, url, body), (verb2, url2, _) = api.calls
+        assert url == f"/tool/{config.TOOL_NAME}/jobs/"
+        assert body["name"] == config.JOB_NAME and body["cmd"] == "run-bot"
+        assert body["schedule"] == "@hourly" and body["job_type"] == "scheduled"
+        assert body["imagename"].endswith(":latest") and body["memory"] == "2Gi"
+        assert url2.endswith(f"/jobs/{config.JOB_NAME}/restart"), "created but not run"
+
+
 def test_usernames_match_the_way_mediawiki_matches_them():
     """MediaWiki treats Foo_Bar and Foo Bar as one account."""
     with tempfile.TemporaryDirectory() as tmp:
