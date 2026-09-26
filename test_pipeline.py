@@ -1317,6 +1317,74 @@ def test_every_page_has_the_tabs_and_codex():
             assert "https://" not in body.split("<body")[0], "external asset in <head>"
 
 
+def test_bengali_names_are_highlighted_safely():
+    out = str(panel_app.highlight_names("<b>মুহাম্মদ ইউনূসের সাথে</b>",
+                                        [("মুহাম্মদ ইউনূস", "Muhammad Yunus", "Q1")]))
+    assert "<b>" not in out and "&lt;b&gt;" in out, "caption HTML was injected"
+    assert '<mark class="wd" title="Muhammad Yunus (Q1)">মুহাম্মদ ইউনূস</mark>ের' in out, out
+    assert str(panel_app.highlight_names("কিছু না", [])) == "কিছু না"
+
+
+def _file_page_client(tmp, page):
+    """A client signed in as the owner, with every Commons call faked.
+    Returns (client, edits, restore)."""
+    client = _panel_client(tmp, owner="RIFAT712", signed_in_as="RIFAT712")
+    edits = []
+    panel_app.wikiauth.fetch_wikitext = lambda title: (page, "2026-09-17T10:00:00Z")
+    panel_app.wikiauth.edit_description = (
+        lambda token, title, text, summary, basetimestamp=None:
+            edits.append((title, text, summary)))
+    panel_app._queue_titles = lambda *a, **k: (("File:X.jpg",), None, "", 1)
+    real = {k: getattr(panel_app.commons, k) for k in ("caption", "categories_of")}
+    panel_app.commons.caption = lambda *a, **k: ""
+    panel_app.commons.categories_of = lambda *a, **k: []
+    def restore():
+        for k, v in real.items():
+            setattr(panel_app.commons, k, v)
+    return client, edits, restore
+
+
+def test_remembered_name_fixes_reach_the_table_once():
+    from panel import corrections
+    with tempfile.TemporaryDirectory() as tmp:
+        page = "{{bn|1=ক খ}}{{en|1=Ka Kha" + wikitext.MARKER + "}}\n"
+        client, _, restore = _file_page_client(tmp, page)
+        real = config.REPLACEMENTS_PATH
+        config.REPLACEMENTS_PATH = os.path.join(tmp, "t.tsv")
+        try:
+            for _ in range(2):
+                client.post("/file/File:X.jpg", data={
+                    "english": "Ka Kha fixed", "categories": "", "action": "save",
+                    "name_fix": ["ক খ|||Ka Kha Fixed"], "remember_names": "on"})
+            rows = corrections.rows(config.REPLACEMENTS_PATH)
+        finally:
+            config.REPLACEMENTS_PATH = real
+            restore()
+        assert [(r["bn"], r["en"], r["user"]) for r in rows] == \
+            [("ক খ", "Ka Kha Fixed", "RIFAT712")], rows
+
+
+def test_file_page_marks_wikidata_names_and_survives_the_replica_being_down():
+    from src import name_resolver
+    with tempfile.TemporaryDirectory() as tmp:
+        page = "{{bn|1=মুহাম্মদ ইউনূসের সাথে}}{{en|1=With Muhammad Yunus}}\n"
+        client, _, restore = _file_page_client(tmp, page)
+        real = name_resolver._lookup
+        os.environ.setdefault("TOOL_REPLICA_USER", "test")
+        try:
+            name_resolver._lookup = lambda keys: [("মুহাম্মদ ইউনূস", "Q1", "Muhammad Yunus", 9)]
+            body = client.get("/file/File:X.jpg").get_data(as_text=True)
+            assert '<mark class="wd"' in body and "wikidata.org/wiki/Q1" in body, body[:400]
+            assert "1 name confirmed on Wikidata" in body
+
+            name_resolver._lookup = lambda keys: (_ for _ in ()).throw(RuntimeError("down"))
+            r = client.get("/file/File:X.jpg")
+            assert r.status_code == 200 and "মুহাম্মদ ইউনূসের" in r.get_data(as_text=True)
+        finally:
+            name_resolver._lookup = real
+            restore()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

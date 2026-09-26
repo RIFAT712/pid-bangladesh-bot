@@ -13,6 +13,7 @@ import os
 import secrets
 import threading
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 import humanize
 import yaml
 from croniter import croniter
+from markupsafe import Markup, escape
 from flask import (Flask, Response, abort, flash, redirect, render_template,
                    request, session, url_for)
 from requests import HTTPError
@@ -29,6 +31,7 @@ from toolforge_weld.kubernetes_config import Kubeconfig
 import config
 from panel import commons, corrections, wikiauth, wikitext
 from src import run_state, wayback
+from src.name_resolver import resolve_names
 
 API_SERVER = 'https://api.svc.tools.eqiad1.wikimedia.cloud:30003/jobs/v1'
 
@@ -933,6 +936,15 @@ def bulk_categorise():
     return redirect(url_for('uploads', **onward))
 
 
+def highlight_names(text, matches):
+    """The Bengali, HTML-escaped, with each Wikidata-matched name marked."""
+    out = str(escape(unicodedata.normalize('NFC', text or '')))
+    for bn, en, qid in sorted(matches, key=lambda m: -len(m[0])):
+        out = out.replace(str(escape(bn)),
+                          f'<mark class="wd" title="{escape(en)} ({escape(qid)})">{escape(bn)}</mark>')
+    return Markup(out)
+
+
 @app.get('/file/<path:title>')
 def file_detail(title):
     """One file's editor, with prev/next that walk the queue it came from.
@@ -971,6 +983,8 @@ def file_detail(title):
         except wikitext.Unparseable as e:
             parse_error = 'Not in the shape the bot writes (%s), so the description is not editable here.' % e
 
+    name_matches = resolve_names(bengali)[1] if bengali else []
+
     bucket = commons._bucket()
 
     # Three states, and the difference is whether the category is written on the
@@ -999,6 +1013,8 @@ def file_detail(title):
                     if position is not None and position + 1 < len(titles) else None),
         position=position, page_count=len(titles), total=total,
         queue=queue, month=month, offset=offset, cursor=cursor, queues=QUEUES,
+        name_matches=name_matches,
+        bengali_html=highlight_names(bengali, name_matches),
         existing_tag=existing_tag, reasons=wikitext.REASONS,
         confirm_reason=wikitext.NEEDS_CONFIRMATION,
         thumb=commons.thumb_url, filepage=commons.file_page_url)
@@ -1067,6 +1083,18 @@ def save_file(title):
                            else 'description and categories')
         except Exception as e:
             flash('Commons refused the edit: %s' % e)
+
+    if request.form.get('remember_names') == 'on' and is_maintainer():
+        remembered = 0
+        for pair in request.form.getlist('name_fix'):
+            bn, _, en = pair.partition('|||')
+            try:
+                remembered += corrections.add(config.REPLACEMENTS_PATH, bn, en, current_user())
+            except ValueError:
+                pass
+        if remembered:
+            changed.append(f'{remembered} name fix{"" if remembered == 1 else "es"} '
+                           f'remembered for future uploads')
 
     flash('Saved %s.' % ' and '.join(changed) if changed else 'Nothing to save.')
 

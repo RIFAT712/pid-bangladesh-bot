@@ -29,23 +29,54 @@
   <h2 class="filetitle">{{ filename }}</h2>
   <p class="hint"><a class="link" href="{{ filepage(filename) }}">Open on Commons</a></p>
 
+  {% if bengali %}
+    <div class="cdx-message cdx-message--block cdx-message--notice">
+      <span class="cdx-message__icon"></span>
+      <div class="cdx-message__content">
+        {% if name_matches %}{{ name_matches|length }} name{{ '' if name_matches|length == 1 else 's' }} confirmed on Wikidata.
+        {% else %}No names in this caption were found on Wikidata.{% endif %}
+        Any other names were spelled by Gemini. Select one in the Bengali to fix it.
+      </div>
+    </div>
+  {% endif %}
+
   <div class="workbench">
     <div class="compare">
       {% if source_url %}
         <figure>
           <img src="{{ url_for('source_image', url=source_url) }}" alt="Original as published" loading="lazy">
-          <figcaption>Original, as published by PID</figcaption>
+          <figcaption>1. Downloaded from PID</figcaption>
         </figure>
       {% endif %}
       <figure>
         <img src="{{ thumb(filename, 800) }}" alt="{{ filename }}" loading="lazy">
-        <figcaption>On Commons, after cropping</figcaption>
+        <figcaption>2. Uploaded to Commons, caption cut off</figcaption>
       </figure>
     </div>
 
     <div class="editpane">
       {% if parse_error %}
         <p class="aside compact">{{ parse_error }}</p>
+      {% endif %}
+
+      {# The Bengali and its Wikidata names are shown to everyone, signed in or
+         not: checking a name needs no account. Read-only: it is OCR of the
+         source caption, not something to rewrite while reviewing. #}
+      {% if bengali %}
+        <span class="stat-l">3. Bengali caption, read by OCR</span>
+        <p class="bn-source" lang="bn" id="bnsource">{{ bengali_html }}</p>
+        {% if name_matches %}
+          <ul class="wdlist">
+            {% for bn, en, qid in name_matches %}
+              <li><mark class="wd" lang="bn">{{ bn }}</mark> → <b>{{ en }}</b>
+                <a href="https://www.wikidata.org/wiki/{{ qid }}" target="_blank" rel="noopener">Wikidata</a></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        <ul class="fixchips" id="fixchips"></ul>
+      {% else %}
+        <p class="hint">No Bengali on this page, so there is nothing to
+          check the translation against here.</p>
       {% endif %}
 
       {% if not wiki_configured %}
@@ -58,7 +89,7 @@
         </p>
         <div class="readout"><p>{{ english }}</p></div>
       {% else %}
-        <form method="post" class="editor"
+        <form method="post" class="editor" id="fileform"
               action="{{ url_for('save_file', title=title) }}">
           <input type="hidden" name="queue" value="{{ queue }}">
           <input type="hidden" name="month" value="{{ month }}">
@@ -72,19 +103,12 @@
           <input id="caption" name="caption" value="{{ caption }}"
                  placeholder="{% if not caption %}No caption set{% endif %}">
 
-          {# The Bengali sits directly above the English because the whole task
-             is comparing the two. Read-only: it is OCR of the source caption,
-             not something to rewrite while reviewing a translation. #}
-          {% if bengali %}
-            <span class="stat-l">Bengali, from the caption band</span>
-            <p class="bn-source" lang="bn">{{ bengali }}</p>
-          {% else %}
-            <p class="hint">No Bengali on this page, so there is nothing to
-              check the translation against here.</p>
-          {% endif %}
-
-          <label for="english" class="stat-l">English description</label>
+          <label for="english" class="stat-l">4. English description on Commons</label>
           <textarea id="english" name="english" rows="7">{{ english }}</textarea>
+          {% if is_maintainer and bengali %}
+            <label class="check"><input type="checkbox" name="remember_names" checked>
+              Also remember my name fixes for future uploads</label>
+          {% endif %}
 
           <label for="catinput" class="stat-l">Categories</label>
           <div class="cats" id="cats">
@@ -183,6 +207,19 @@
   </div>
 </section>
 
+<div class="fixpop" id="fixpop" hidden role="dialog" aria-label="Fix a name">
+  <b>Fix this name</b>
+  <span lang="bn" id="fixbn"></span>
+  <label>How Gemini spelled it in the English (optional)
+    <input id="fixwrong" autocomplete="off"></label>
+  <label>Correct English
+    <input id="fixright" autocomplete="off"></label>
+  <span style="display:flex;gap:.5rem">
+    <button type="button" class="primary small" id="fixapply">Apply</button>
+    <button type="button" class="quiet small" id="fixcancel">Cancel</button>
+  </span>
+</div>
+
 <script>
   // Arrow keys walk the queue, unless you are typing into the form.
   document.addEventListener('keydown', function (e) {
@@ -271,6 +308,49 @@
                                           : 'Add to the review list';
     });
   }
+
+  // Fix a name: select words in the Bengali, say what the English should be.
+  // The fix edits the English box, and travels with the form as name_fix so the
+  // server can remember it for future runs.
+  (function () {
+    var src = document.getElementById('bnsource'), pop = document.getElementById('fixpop');
+    var form = document.getElementById('fileform');
+    if (!src || !pop || !form) return;
+    var english = document.getElementById('english'), chips = document.getElementById('fixchips');
+    var bn = '';
+    function close() { pop.hidden = true; }
+    function openFromSelection() {
+      var sel = window.getSelection();
+      bn = sel ? sel.toString().trim() : '';
+      if (!bn || !src.contains(sel.anchorNode)) return;
+      var r = sel.getRangeAt(0).getBoundingClientRect();
+      document.getElementById('fixbn').textContent = bn;
+      document.getElementById('fixwrong').value = '';
+      document.getElementById('fixright').value = '';
+      pop.hidden = false;
+      pop.style.top = (window.scrollY + r.bottom + 6) + 'px';
+      pop.style.left = Math.max(8, Math.min(window.scrollX + r.left,
+        window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8)) + 'px';
+      document.getElementById('fixright').focus();
+    }
+    src.addEventListener('mouseup', openFromSelection);
+    src.addEventListener('touchend', function () { setTimeout(openFromSelection, 0); });
+    document.getElementById('fixcancel').addEventListener('click', close);
+    document.getElementById('fixapply').addEventListener('click', function () {
+      var wrong = document.getElementById('fixwrong').value.trim();
+      var right = document.getElementById('fixright').value.trim();
+      if (!right || right.indexOf('|||') !== -1) return;
+      if (wrong) english.value = english.value.split(wrong).join(right);
+      var hidden = document.createElement('input');
+      hidden.type = 'hidden'; hidden.name = 'name_fix'; hidden.value = bn + '|||' + right;
+      form.appendChild(hidden);
+      var li = document.createElement('li');
+      li.textContent = bn + ' → ' + right;
+      chips.appendChild(li);
+      close();
+    });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  })();
 </script>
 
 {% endblock %}
