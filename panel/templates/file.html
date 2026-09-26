@@ -322,7 +322,9 @@
     function openFromSelection() {
       var sel = window.getSelection();
       bn = sel ? sel.toString().trim() : '';
-      if (!bn || !src.contains(sel.anchorNode)) return;
+      // Both ends inside the caption, one line: a drag past it picks up the
+      // name list, which is not a name.
+      if (!bn || /[\r\n]/.test(bn) || !src.contains(sel.anchorNode) || !src.contains(sel.focusNode)) return;
       var r = sel.getRangeAt(0).getBoundingClientRect();
       document.getElementById('fixbn').textContent = bn;
       document.getElementById('fixwrong').value = '';

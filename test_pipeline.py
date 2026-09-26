@@ -1413,6 +1413,124 @@ def test_old_upload_links_land_on_the_file_page():
         assert r.status_code == 302 and "/file/File:A.jpg" in r.headers["Location"], r.headers
 
 
+# ── Final review fixes ────────────────────────────────────────────────────────
+
+def test_pausing_mid_run_offers_resume_and_a_second_pause_keeps_the_schedule():
+    running_paused = panel_app.status_view("running", True, True, {"status": "running"})
+    assert "resume" in running_paused["actions"] and "pause" not in running_paused["actions"]
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712", signed_in_as="RIFAT712")
+        patched = []
+        class Api:
+            def patch(self, url, **kw):
+                patched.append(kw.get("json"))
+        panel_app.jobs_api = lambda: Api()
+        panel_app.fetch_job = lambda: ({"schedule": panel_app.NEVER_FIRES}, True, "")
+        with client.session_transaction() as s:
+            s["schedule_before_pause"] = "@hourly"
+        client.post("/pause")
+        with client.session_transaction() as s:
+            assert s.get("schedule_before_pause") == "@hourly", "real schedule overwritten"
+        assert patched == [], "paused an already-paused job"
+
+
+def test_editing_a_correction_cannot_duplicate_another_rows_bengali():
+    from panel import corrections
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "t.tsv")
+        corrections.add(p, "ক খ", "A", "u")
+        corrections.add(p, "গ ঘ", "B", "u")
+        assert corrections.update(p, "গ ঘ", "ক খ", "B", "u") is False
+        assert [r["bn"] for r in corrections.rows(p)] == ["ক খ", "গ ঘ"]
+
+
+def test_the_file_page_asks_the_replica_with_a_short_timeout():
+    from src import name_resolver
+    seen = {}
+    real = name_resolver.pymysql.connect
+    def connect(**kw):
+        seen.update(kw)
+        raise RuntimeError("down")
+    name_resolver.pymysql.connect = connect
+    name_resolver._local.conn = None
+    os.environ.setdefault("TOOL_REPLICA_USER", "test")
+    os.environ.setdefault("TOOL_REPLICA_PASSWORD", "test")
+    try:
+        name_resolver.resolve_names("মুহাম্মদ ইউনূস ঢাকায়", timeout=3)
+    finally:
+        name_resolver.pymysql.connect = real
+    assert seen["connect_timeout"] <= 3 and seen["read_timeout"] <= 3, seen
+    with tempfile.TemporaryDirectory() as tmp:
+        page = "{{bn|1=মুহাম্মদ ইউনূস}}{{en|1=x}}\n"
+        client, _, restore = _file_page_client(tmp, page)
+        asked = {}
+        panel_app.resolve_names = lambda text, **kw: (asked.update(kw) or (text, []))
+        try:
+            client.get("/file/File:X.jpg")
+        finally:
+            restore()
+        assert asked.get("timeout", 99) <= 3, asked
+
+
+def test_a_name_appearing_twice_is_counted_and_marked_once_each():
+    m = ("মুহাম্মদ ইউনূস", "Muhammad Yunus", "Q1")
+    out = str(panel_app.highlight_names("মুহাম্মদ ইউনূস এবং মুহাম্মদ ইউনূস", [m, m]))
+    assert out.count("<mark") == 2 and "<mark class=\"wd\" title=\"Muhammad Yunus (Q1)\"><mark" not in out, out
+    tricky = [("ক খ", "ক খ গ", "Q2"), ("ক খ গ", "Longer", "Q3")]
+    out = str(panel_app.highlight_names("ক খ গ ঘ", tricky))
+    assert out.count("<mark") == 1 and out.count("</mark>") == 1, out
+    from src import name_resolver
+    with tempfile.TemporaryDirectory() as tmp:
+        page = "{{bn|1=মুহাম্মদ ইউনূস এবং মুহাম্মদ ইউনূস}}{{en|1=x}}\n"
+        client, _, restore = _file_page_client(tmp, page)
+        real = name_resolver._lookup
+        name_resolver._lookup = lambda keys: [("মুহাম্মদ ইউনূস", "Q1", "Muhammad Yunus", 9)]
+        os.environ.setdefault("TOOL_REPLICA_USER", "test")
+        try:
+            body = client.get("/file/File:X.jpg").get_data(as_text=True)
+        finally:
+            name_resolver._lookup = real
+            restore()
+        assert "1 name confirmed" in body, "a repeated name was counted twice"
+
+
+def test_session_cookie_is_same_site():
+    assert panel_app.app.config.get("SESSION_COOKIE_SAMESITE") == "Lax"
+
+
+def test_corrections_are_written_atomically():
+    """The bot reads this file over NFS; a half-written table means wrong names."""
+    from panel import corrections
+    calls = []
+    real = corrections.os.replace
+    corrections.os.replace = lambda a, b: (calls.append((a, b)), real(a, b))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "t.tsv")
+            corrections.add(p, "ক খ", "A", "u")
+            assert corrections.rows(p)[0]["en"] == "A"
+    finally:
+        corrections.os.replace = real
+    assert calls and calls[0][1] == p, calls
+
+
+def test_a_name_fix_that_cannot_be_saved_is_reported():
+    with tempfile.TemporaryDirectory() as tmp:
+        page = "{{bn|1=ক খ}}{{en|1=Ka Kha" + wikitext.MARKER + "}}\n"
+        client, _, restore = _file_page_client(tmp, page)
+        real = config.REPLACEMENTS_PATH
+        config.REPLACEMENTS_PATH = os.path.join(tmp, "t.tsv")
+        try:
+            r = client.post("/file/File:X.jpg", data={
+                "english": "Ka Kha", "categories": "", "action": "save",
+                "name_fix": ["ক\nখ|||Ka Kha"], "remember_names": "on"},
+                follow_redirects=True)
+        finally:
+            config.REPLACEMENTS_PATH = real
+            restore()
+        assert "not remembered" in r.get_data(as_text=True)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

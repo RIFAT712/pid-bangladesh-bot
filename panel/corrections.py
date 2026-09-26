@@ -3,6 +3,7 @@
 # can list, add, edit and delete. Comment lines are preserved; rows are keyed
 # by their Bengali, which the bot matches on, so two rows can't share one.
 
+import os
 from datetime import date
 from pathlib import Path
 
@@ -23,7 +24,11 @@ def _lines(path):
 
 
 def _write(path, lines):
-    Path(path).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    # Write aside, then swap in: the bot reads this file over NFS, and a table
+    # caught half-written would mean a run with names missing.
+    tmp = f'{path}.tmp'
+    Path(tmp).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    os.replace(tmp, path)
 
 
 def _line(bn, en, user):
@@ -50,6 +55,8 @@ def add(path, bn, en, user):
 
 def update(path, old_bn, bn, en, user):
     _check(bn, en)
+    if bn.strip() != old_bn and any(r['bn'] == bn.strip() for r in rows(path)):
+        return False
     lines, found = _lines(path), False
     for i, line in enumerate(lines):
         parsed = parse_replacement_line(line)

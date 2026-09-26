@@ -79,6 +79,8 @@ _UNAVAILABLE_SVG = (
     "</svg>").encode()
 
 app = Flask(__name__)
+# Cross-site forms can't ride a maintainer's session into the controls.
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # Signing key for the session cookie. It must survive restarts and be identical
 # in every gunicorn worker: a per-process random key would sign each worker's
@@ -177,14 +179,20 @@ def status_view(state, paused, reachable, latest):
     if state == 'no-job':
         return {'tone': 'notice', 'actions': ['start'],
                 'sentence': 'Stopped. Nothing will run until you start it.'}
-    if state in ('running', 'pending'):
+    running = state in ('running', 'pending')
+    # Paused is checked before running: a pause made mid-run must still offer
+    # Resume, or the next click is a second Pause that records NEVER_FIRES as
+    # the schedule to go back to.
+    if paused:
+        return {'tone': 'warning',
+                'actions': ['resume', 'stop'] if running else ['run', 'resume', 'stop'],
+                'sentence': ('Running now; the schedule is paused, so nothing starts after this run.'
+                             if running else 'Paused. Nothing runs on schedule until you resume it.')}
+    if running:
         n = (latest or {}).get('uploaded', 0) if (latest or {}).get('status') == 'running' else 0
         so_far = f' {n} photo{"" if n == 1 else "s"} uploaded so far.' if n else ''
         return {'tone': 'success', 'actions': ['pause', 'stop'],
                 'sentence': 'Running now.' + so_far}
-    if paused:
-        return {'tone': 'warning', 'actions': ['run', 'resume', 'stop'],
-                'sentence': 'Paused. Nothing runs on schedule until you resume it.'}
     if state == 'failed':
         return {'tone': 'error', 'actions': ['run', 'pause', 'stop'],
                 'sentence': 'The last run failed. The errors are in the technical log below.'}
@@ -577,6 +585,9 @@ def pause():
     job, _, _ = fetch_job()
     if not job:
         abort(404, 'No pid-bot job is loaded.')
+    if job.get('schedule') == NEVER_FIRES:
+        flash('Already paused.')
+        return redirect(url_for('index'))
     session['schedule_before_pause'] = job.get('schedule')
     jobs_api().patch(_job_url(), json={'schedule': NEVER_FIRES}, display_messages=False)
     flash('Paused. The job definition is intact; nothing will fire until you resume.')
@@ -626,9 +637,11 @@ def save_replacements():
             flash('Added. It applies from the next run.' if ok
                   else 'That Bengali already has a correction. Edit it instead.')
         elif action == 'update':
-            corrections.update(path, form.get('old_bn', ''), form.get('bn', ''),
-                               form.get('en', ''), current_user())
-            flash('Saved. It applies from the next run.')
+            ok = corrections.update(path, form.get('old_bn', ''), form.get('bn', ''),
+                                    form.get('en', ''), current_user())
+            flash('Saved. It applies from the next run.' if ok else
+                  'Not saved: another correction already has that Bengali, '
+                  'or this one was deleted meanwhile.')
         elif action == 'delete':
             corrections.delete(path, form.get('bn', ''))
             flash('Deleted.')
@@ -865,11 +878,21 @@ def bulk_categorise():
 
 def highlight_names(text, matches):
     """The Bengali, HTML-escaped, with each Wikidata-matched name marked."""
-    out = str(escape(unicodedata.normalize('NFC', text or '')))
-    for bn, en, qid in sorted(matches, key=lambda m: -len(m[0])):
-        out = out.replace(str(escape(bn)),
-                          f'<mark class="wd" title="{escape(en)} ({escape(qid)})">{escape(bn)}</mark>')
-    return Markup(out)
+    text = unicodedata.normalize('NFC', text or '')
+    names = {bn: (en, qid) for bn, en, qid in matches}
+    if not names:
+        return escape(text)
+    # One pass, longest name first, over the raw text: replacing inside output
+    # that already holds <mark> tags nests them or lands in a title attribute.
+    pattern = '|'.join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    out = []
+    for i, part in enumerate(re.split(f'({pattern})', text)):
+        if i % 2:
+            en, qid = names[part]
+            out.append(f'<mark class="wd" title="{escape(en)} ({escape(qid)})">{escape(part)}</mark>')
+        else:
+            out.append(str(escape(part)))
+    return Markup(''.join(out))
 
 
 @app.get('/file/<path:title>')
@@ -910,7 +933,10 @@ def file_detail(title):
         except wikitext.Unparseable as e:
             parse_error = 'Not in the shape the bot writes (%s), so the description is not editable here.' % e
 
-    name_matches = resolve_names(bengali)[1] if bengali else []
+    # Short timeout: this runs on every page view, so a slow replica must not
+    # stall walking the review queue. One entry per name, however often it recurs.
+    name_matches = list({m[0]: m for m in (resolve_names(bengali, timeout=3)[1]
+                                           if bengali else [])}.values())
 
     bucket = commons._bucket()
 
@@ -1012,13 +1038,16 @@ def save_file(title):
             flash('Commons refused the edit: %s' % e)
 
     if request.form.get('remember_names') == 'on' and is_maintainer():
-        remembered = 0
+        remembered, skipped = 0, []
         for pair in request.form.getlist('name_fix'):
             bn, _, en = pair.partition('|||')
             try:
                 remembered += corrections.add(config.REPLACEMENTS_PATH, bn, en, current_user())
             except ValueError:
-                pass
+                skipped.append(' '.join(bn.split()))
+        if skipped:
+            flash('%d name fix%s not remembered (select the words within one line): %s'
+                  % (len(skipped), '' if len(skipped) == 1 else 'es', ', '.join(skipped)))
         if remembered:
             changed.append(f'{remembered} name fix{"" if remembered == 1 else "es"} '
                            f'remembered for future uploads')

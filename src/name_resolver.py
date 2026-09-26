@@ -63,8 +63,8 @@ def _connection():
             password=os.environ['TOOL_REPLICA_PASSWORD'],
             database='wikidatawiki_p',
             charset='utf8mb4',
-            connect_timeout=10,
-            read_timeout=60,
+            connect_timeout=min(10, getattr(_local, 'timeout', None) or 10),
+            read_timeout=getattr(_local, 'timeout', None) or 60,
         )
         _local.conn = conn
     else:
@@ -122,8 +122,12 @@ def _candidates(text):
     return out
 
 
-def resolve_names(text):
-    """Return (text with names replaced, [(bengali, english, qid), ...])."""
+def resolve_names(text, timeout=None):
+    """Return (text with names replaced, [(bengali, english, qid), ...]).
+
+    `timeout` (seconds) caps the replica connection for callers that can't
+    wait, like the panel rendering a page; the bot takes the defaults.
+    """
     global _disabled_logged
     if not text:
         return text, []
@@ -137,6 +141,7 @@ def resolve_names(text):
             logger.warning("Wikidata name resolution off: no replica credentials in the environment")
             _disabled_logged = True
         return text, []
+    _local.timeout = timeout
     try:
         names = _choose(_lookup(cands))
     except Exception as e:
