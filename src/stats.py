@@ -47,11 +47,29 @@ def load(path=None):
         return {}
 
 
-def _empty_day():
-    return {'runs': 0, 'uploaded': 0, 'duplicates': 0,
-            'failed': {c: 0 for c in CAUSES},
-            'gemini': {'free': 0, 'paid': 0, 'free_limit': 0},
-            'backlog': None}
+def _int(x):
+    return int(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else 0
+
+
+def coerce_day(v):
+    """One day's entry in its proper shape, whatever the file holds.
+
+    The file sits on shared storage and can be hand-edited; a wrong type in one
+    day must neither crash the Stats page nor stop the bot recording that day.
+    Anything unusable reads as zero, or no backlog snapshot.
+    """
+    v = v if isinstance(v, dict) else {}
+    failed = v.get('failed') if isinstance(v.get('failed'), dict) else {}
+    gemini = v.get('gemini') if isinstance(v.get('gemini'), dict) else {}
+    b = v.get('backlog')
+    ok = isinstance(b, dict) and all(
+        isinstance(b.get(k), int) and not isinstance(b.get(k), bool)
+        for k in ('review', 'uncategorised'))
+    return {'runs': _int(v.get('runs')), 'uploaded': _int(v.get('uploaded')),
+            'duplicates': _int(v.get('duplicates')),
+            'failed': {c: _int(failed.get(c)) for c in CAUSES},
+            'gemini': {k: _int(gemini.get(k)) for k in ('free', 'paid', 'free_limit')},
+            'backlog': {'review': b['review'], 'uncategorised': b['uncategorised']} if ok else None}
 
 
 def record_run(uploaded, duplicates, failed, gemini, backlog, path=None, today=None):
@@ -60,14 +78,7 @@ def record_run(uploaded, duplicates, failed, gemini, backlog, path=None, today=N
     today = today or datetime.now(timezone.utc).date().isoformat()
     try:
         data = load(path)
-        day = _empty_day()
-        old = data.get(today)
-        if isinstance(old, dict):
-            for k in ('runs', 'uploaded', 'duplicates'):
-                day[k] = int(old.get(k, 0) or 0)
-            day['failed'] = {c: int((old.get('failed') or {}).get(c, 0) or 0) for c in CAUSES}
-            day['gemini'] = {k: int((old.get('gemini') or {}).get(k, 0) or 0) for k in day['gemini']}
-            day['backlog'] = old.get('backlog')
+        day = coerce_day(data.get(today))
         day['runs'] += 1
         day['uploaded'] += uploaded
         day['duplicates'] += duplicates

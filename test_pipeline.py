@@ -1660,15 +1660,16 @@ def test_gemini_usage_counts_free_paid_and_free_limit_hits():
 def test_stats_buckets_days_and_compares_with_the_period_before():
     from datetime import date
     from panel import stats_view
-    uploads = [{"date": "2026-09-25 10:00", "filename": "a.jpg"},
-               {"date": "2026-09-26", "filename": "b.jpg"},
+    uploads = [{"date": "2026-09-24", "filename": "e.jpg"},
+               {"date": "2026-09-25 10:00", "filename": "a.jpg"},
+               {"date": "2026-09-26", "filename": "b.jpg"},     # today: not compared
                {"date": "2026-09-26", "filename": ""},          # duplicate registration
                {"date": "garbage", "filename": "c.jpg"},        # malformed: skipped
                {"date": "2026-09-18", "filename": "d.jpg"}]     # previous 7-day period
     v = stats_view.build({}, uploads, "7d", date(2026, 9, 26))
     assert v["labels"][-1] == "2026-09-26" and len(v["labels"]) == 7
     assert v["uploads"]["values"][-2:] == [1, 1]
-    assert "2 uploaded in the last 7 days" in v["uploads"]["summary"]
+    assert "3 uploaded in the last 7 days" in v["uploads"]["summary"]
     assert "100% more" in v["uploads"]["summary"], v["uploads"]["summary"]
     assert v["failures"]["since"] is None and "No data yet" in v["failures"]["summary"]
 
@@ -1709,6 +1710,38 @@ def test_stats_page_renders_with_its_data_and_no_external_scripts():
         assert "No data yet" in body
         assert 'src="http' not in body, "external script"
         assert ">Stats</a>" in body
+
+
+BAD_DAY = {"runs": "x", "failed": ["x"], "gemini": "free",
+           "backlog": {"review": "lots", "uncategorised": [1]}}
+
+
+def test_a_malformed_day_entry_neither_breaks_the_page_nor_stops_recording():
+    from datetime import date
+    from panel import stats_view
+    from src import stats
+    daily = {"2026-09-25": BAD_DAY,
+             "2026-09-24": {"failed": {"ocr": "abc"}, "gemini": {"free": [1]}}}
+    v = stats_view.build(daily, [], "30d", date(2026, 9, 26))     # must not raise
+    assert v["backlog"]["review"][-2] is None
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "s.json")
+        with open(p, "w") as f:
+            json.dump({"2026-09-26": BAD_DAY}, f)
+        stats.record_run(2, 0, {"ocr": 1}, {"free": 3}, None, path=p, today="2026-09-26")
+        day = stats.load(p)["2026-09-26"]
+        assert day["uploaded"] == 2 and day["failed"]["ocr"] == 1 and day["gemini"]["free"] == 3, day
+
+
+def test_the_comparison_leaves_out_the_unfinished_day():
+    """Today is still running; comparing it as a full day always reads 'fewer'."""
+    from datetime import date
+    from panel import stats_view
+    today = date(2026, 9, 26)
+    uploads = [{"date": (today.fromordinal(today.toordinal() - k)).isoformat(), "filename": "x"}
+               for k in range(1, 14)]            # one a day on every complete day, none yet today
+    v = stats_view.build({}, uploads, "7d", today)
+    assert "the same as" in v["uploads"]["summary"], v["uploads"]["summary"]
 
 
 if __name__ == "__main__":

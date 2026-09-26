@@ -5,6 +5,8 @@
 
 from datetime import date, timedelta
 
+from src.stats import coerce_day
+
 CAUSES = ('download', 'ocr', 'translation', 'title', 'upload', 'other')
 RANGES = {'7d': 7, '30d': 30, '12m': 12}
 CAUSE_LABELS = {'download': 'download', 'ocr': 'OCR', 'translation': 'translation',
@@ -28,7 +30,11 @@ def _buckets(range_key, today):
             y, m = (y, m - 1) if m > 1 else (y - 1, 12)
         labels = months[::-1]
         first = labels[0]
-        prev_first = f'{int(first[:4]) - 1:04d}-{first[5:]}'
+        # The 11 months before the window: compared with its 11 complete ones.
+        y, m = int(first[:4]), int(first[5:]) - 11
+        while m < 1:
+            y, m = y - 1, m + 12
+        prev_first = f'{y:04d}-{m:02d}'
         return (labels,
                 lambda d: d.strftime('%Y-%m') if d.strftime('%Y-%m') in labels else None,
                 lambda d: prev_first <= d.strftime('%Y-%m') < first)
@@ -37,7 +43,7 @@ def _buckets(range_key, today):
     labels = [(start + timedelta(days=i)).isoformat() for i in range(n)]
     return (labels,
             lambda d: d.isoformat() if start <= d <= today else None,
-            lambda d: start - timedelta(days=n) <= d < start)
+            lambda d: start - timedelta(days=n - 1) <= d < start)
 
 
 def build(daily, uploads, range_key, today):
@@ -59,8 +65,11 @@ def build(daily, uploads, range_key, today):
         elif in_prev(d):
             prev_total += 1
     total = sum(up)
+    # Today (or this month) is unfinished, so the comparison uses the complete
+    # buckets only, against the same number just before them.
+    complete = sum(up[:-1])
     if prev_total:
-        diff = total - prev_total
+        diff = complete - prev_total
         pct = round(abs(diff) * 100 / prev_total)
         trend = (f', {pct}% {"more" if diff > 0 else "fewer"} than the period before'
                  if diff else ', the same as the period before')
@@ -69,8 +78,8 @@ def build(daily, uploads, range_key, today):
     uploads_summary = f'{total:,} uploaded in {words}{trend}.'
 
     # Daily totals from the bot.
-    days = sorted((d, v) for d, v in ((_day(k), v) for k, v in daily.items())
-                  if d and isinstance(v, dict))
+    days = sorted(((d, coerce_day(v)) for d, v in ((_day(k), v) for k, v in daily.items()) if d),
+                  key=lambda dv: dv[0])
     since = days[0][0].isoformat() if days else None
     failures = {c: zero() for c in CAUSES}
     free, paid, limit = zero(), zero(), zero()
@@ -81,14 +90,12 @@ def build(daily, uploads, range_key, today):
             continue
         i = idx[k]
         for c in CAUSES:
-            failures[c][i] += int((v.get('failed') or {}).get(c, 0) or 0)
-        g = v.get('gemini') or {}
-        free[i] += int(g.get('free', 0) or 0)
-        paid[i] += int(g.get('paid', 0) or 0)
-        limit[i] += int(g.get('free_limit', 0) or 0)
-        b = v.get('backlog')
-        if isinstance(b, dict):                    # days are sorted: the latest wins
-            review[i], uncat[i] = b.get('review'), b.get('uncategorised')
+            failures[c][i] += v['failed'][c]
+        free[i] += v['gemini']['free']
+        paid[i] += v['gemini']['paid']
+        limit[i] += v['gemini']['free_limit']
+        if v['backlog']:                           # days are sorted: the latest wins
+            review[i], uncat[i] = v['backlog']['review'], v['backlog']['uncategorised']
 
     def collecting(sentence):
         if since is None:
