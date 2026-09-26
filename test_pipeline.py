@@ -1744,6 +1744,31 @@ def test_the_comparison_leaves_out_the_unfinished_day():
     assert "the same as" in v["uploads"]["summary"], v["uploads"]["summary"]
 
 
+# ── Image processing ──────────────────────────────────────────────────────────
+
+def test_a_photo_recovered_from_the_wayback_machine_is_processed():
+    """PID deleted the original; the archived copy must still be cropped and read."""
+    import numpy as np
+    from src.image_processor import ImageProcessor
+    ip = ImageProcessor()
+    img = np.full((400, 300, 3), 200, dtype=np.uint8)
+    ip.download_image = lambda url: (img, "jpg", None, b"raw", "Retrieved from Wayback Machine")
+    ip.perform_ocr = lambda section: "আজ ঢাকায় সভা"
+    result = ip.process_image(1, "https://pressinform.gov.bd/x.jpg")
+    assert result["image"] is not None, result["status"]
+    assert result["ocr_text"] == "আজ ঢাকায় সভা"
+    assert result["status"].startswith("Success"), result["status"]
+    assert "archive" in result["status"].lower(), "the archive origin should stay visible"
+
+
+def test_a_failed_download_still_stops_processing():
+    from src.image_processor import ImageProcessor
+    ip = ImageProcessor()
+    ip.download_image = lambda url: (None, None, None, None, "404 error - no snapshot")
+    result = ip.process_image(1, "https://pressinform.gov.bd/x.jpg")
+    assert result["image"] is None and result["status"] == "404 error - no snapshot"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

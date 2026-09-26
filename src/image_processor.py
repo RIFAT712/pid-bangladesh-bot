@@ -237,14 +237,13 @@ class ImageProcessor(Cropper):
             print(f"Row {row_index}: Downloading image...")
             image, img_format, exif_data, raw_bytes, error = self.download_image(
                 image_url)
-            if error:
-                if "404" in error:
-                    result['status'] = error
-                elif "Wayback Machine" in error:
-                    result['status'] = "Retrieved from archive"
-                else:
-                    result['status'] = error
+            if error and image is None:
+                result['status'] = error
                 return result
+            # An image *with* a message is the Wayback copy of a photo PID has
+            # removed. It still gets cropped, read and uploaded; stopping here
+            # lost every such photo.
+            from_archive = bool(error)
 
             result['format'] = img_format
             result['exif'] = exif_data
@@ -304,6 +303,8 @@ class ImageProcessor(Cropper):
                 else:
                     result['status'] = 'Success'
 
+            if from_archive and result['status'].startswith('Success'):
+                result['status'] += ' (from archive)'
             print(f"Row {row_index}: Image processing completed")
 
         except Exception as e:
