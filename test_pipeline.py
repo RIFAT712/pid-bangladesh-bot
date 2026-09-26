@@ -1657,6 +1657,40 @@ def test_gemini_usage_counts_free_paid_and_free_limit_hits():
     assert translator.usage() == {"free": 0, "paid": 0, "free_limit": 0}
 
 
+def test_stats_buckets_days_and_compares_with_the_period_before():
+    from datetime import date
+    from panel import stats_view
+    uploads = [{"date": "2026-09-25 10:00", "filename": "a.jpg"},
+               {"date": "2026-09-26", "filename": "b.jpg"},
+               {"date": "2026-09-26", "filename": ""},          # duplicate registration
+               {"date": "garbage", "filename": "c.jpg"},        # malformed: skipped
+               {"date": "2026-09-18", "filename": "d.jpg"}]     # previous 7-day period
+    v = stats_view.build({}, uploads, "7d", date(2026, 9, 26))
+    assert v["labels"][-1] == "2026-09-26" and len(v["labels"]) == 7
+    assert v["uploads"]["values"][-2:] == [1, 1]
+    assert "2 uploaded in the last 7 days" in v["uploads"]["summary"]
+    assert "100% more" in v["uploads"]["summary"], v["uploads"]["summary"]
+    assert v["failures"]["since"] is None and "No data yet" in v["failures"]["summary"]
+
+
+def test_stats_monthly_range_crosses_the_year_and_reads_the_daily_file():
+    from datetime import date
+    from panel import stats_view
+    daily = {"2026-01-03": {"runs": 1, "uploaded": 2, "duplicates": 0,
+                            "failed": {"ocr": 2, "translation": 1},
+                            "gemini": {"free": 9, "paid": 1, "free_limit": 1},
+                            "backlog": {"review": 500, "uncategorised": 40}},
+             "2025-12-30": {"runs": 1},                                  # missing keys
+             "not-a-date": {"runs": 1}}
+    v = stats_view.build(daily, [], "12m", date(2026, 1, 15))
+    assert v["labels"][0] == "2025-02" and v["labels"][-1] == "2026-01" and len(v["labels"]) == 12
+    assert v["failures"]["series"]["ocr"][-1] == 2 and v["failures"]["series"]["upload"][-1] == 0
+    assert v["gemini"]["paid"][-1] == 1 and v["gemini"]["free"][-1] == 9
+    assert v["backlog"]["review"][-1] == 500 and v["backlog"]["review"][0] is None
+    assert v["failures"]["since"] == "2025-12-30"
+    assert "10%" in v["gemini"]["summary"], v["gemini"]["summary"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
