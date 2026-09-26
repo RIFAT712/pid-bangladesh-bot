@@ -1588,6 +1588,75 @@ def test_the_file_page_walks_the_search_results():
         assert 'name="q" value="Yunus"' in body, "saving would drop the search"
 
 
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+def test_failures_are_sorted_into_causes():
+    from src.stats import failure_cause
+    ok = {"upload_status": "Success"}
+    assert failure_cause(ok) is None
+    assert failure_cause({"upload_status": "Skipped (checksum duplicate)"}) is None
+    assert failure_cause({"ocr_status": "No URL"}) is None
+    assert failure_cause({"ocr_status": "404 error - no snapshot"}) == "download"
+    assert failure_cause({"ocr_status": "Download failed: timeout"}) == "download"
+    assert failure_cause({"ocr_status": "OCR failed"}) == "ocr"
+    assert failure_cause({"ocr_status": "No text detected"}) == "ocr"
+    assert failure_cause({"ocr_status": "Success", "translation_status": "Error: all models failed"}) == "translation"
+    assert failure_cause({"ocr_status": "Success", "translation_status": "Success",
+                          "filename_status": "Error: x"}) == "title"
+    assert failure_cause({"ocr_status": "Success", "translation_status": "Success",
+                          "filename_status": "Success", "upload_status": "Failed: abuse filter"}) == "upload"
+    assert failure_cause({"ocr_status": "Success", "upload_status": "Exception: boom"}) == "other"
+
+
+def test_runs_add_up_per_day_and_backlog_is_the_latest():
+    from src import stats
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "s.json")
+        with open(p, "w") as f:
+            f.write("not json")
+        stats.record_run(3, 1, {"ocr": 1}, {"free": 5, "paid": 1, "free_limit": 2},
+                         {"review": 100, "uncategorised": 50}, path=p, today="2026-09-26")
+        stats.record_run(2, 0, {"ocr": 1, "upload": 1}, {"free": 4, "paid": 0, "free_limit": 0},
+                         {"review": 98, "uncategorised": 51}, path=p, today="2026-09-26")
+        stats.record_run(1, 0, {}, {"free": 1, "paid": 0, "free_limit": 0}, None,
+                         path=p, today="2026-09-26")
+        day = stats.load(p)["2026-09-26"]
+        assert day["runs"] == 3 and day["uploaded"] == 6 and day["duplicates"] == 1
+        assert day["failed"]["ocr"] == 2 and day["failed"]["upload"] == 1 and day["failed"]["title"] == 0
+        assert day["gemini"] == {"free": 10, "paid": 1, "free_limit": 2}
+        assert day["backlog"] == {"review": 98, "uncategorised": 51}, "a failed fetch erased the backlog"
+        assert not os.path.exists(p + ".tmp")
+
+
+def test_gemini_usage_counts_free_paid_and_free_limit_hits():
+    translator.sleep = lambda s: None
+    translator.reset_usage()
+
+    class Resp:
+        text = "ok"
+
+    class Models:
+        def __init__(self, fail_first_with=None):
+            self.fail = fail_first_with
+        def generate_content(self, **kw):
+            if self.fail:
+                e, self.fail = self.fail, None
+                raise e
+            return Resp()
+
+    class Client:
+        def __init__(self, fail=None):
+            self.models = Models(fail)
+
+    translator._gemini_text(Client(RuntimeError("429 RESOURCE_EXHAUSTED")), Client(), "p", 10, 1,
+                            lambda t: t)
+    translator._gemini_text(Client(RuntimeError("400 bad request")), Client(), "p", 10, 2,
+                            lambda t: t)
+    assert translator.usage() == {"free": 1, "paid": 1, "free_limit": 1}, translator.usage()
+    translator.reset_usage()
+    assert translator.usage() == {"free": 0, "paid": 0, "free_limit": 0}
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -5,6 +5,7 @@
 import os
 import random
 import re
+import threading
 from datetime import datetime
 from time import sleep
 
@@ -89,6 +90,28 @@ class _Retry(Exception):
     """Raised by an `accept` callback to ask the same model for another sample."""
 
 
+# Which tier answered, and how often the free one said "slow down": counted
+# for the panel's Stats page. Workers translate in parallel, hence the lock.
+_usage_lock = threading.Lock()
+_usage = {'free': 0, 'paid': 0, 'free_limit': 0}
+
+
+def _count(key):
+    with _usage_lock:
+        _usage[key] += 1
+
+
+def usage():
+    with _usage_lock:
+        return dict(_usage)
+
+
+def reset_usage():
+    with _usage_lock:
+        for k in _usage:
+            _usage[k] = 0
+
+
 def _gemini_text(genai_client, vertex_client, prompt, max_tokens, row_index, accept):
     """Walk the free→paid model ladder with backoff until `accept` takes an answer.
 
@@ -126,12 +149,16 @@ def _gemini_text(genai_client, vertex_client, prompt, max_tokens, row_index, acc
                 if not text:
                     raise RuntimeError("Empty response")
 
-                return accept(text), source_name
+                value = accept(text)
+                _count('free' if client is genai_client else 'paid')
+                return value, source_name
 
             except Exception as e:
                 last_exception = e
                 retryable = isinstance(e, _Retry) or any(
                     m in str(e).lower() for m in _TRANSIENT_MARKERS)
+                if client is genai_client and '429' in str(e):
+                    _count('free_limit')
 
                 if retryable and attempt < config.MAX_RETRIES:
                     wait = min(backoff, config.MAX_BACKOFF) + random.uniform(0, backoff * 0.5)

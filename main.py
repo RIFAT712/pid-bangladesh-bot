@@ -31,11 +31,14 @@ from src.commons_log import log_to_commons
 from src.image_processor import ImageProcessor
 from src.name_resolver import resolve_names
 from src.scraper import scrape_data
+from src import stats
 from src.translator import (
     apply_translation_replacements,
     generate_title,
     load_translation_replacements,
+    reset_usage,
     translate_text,
+    usage,
 )
 from src.uploader import (
     ensure_pid_infrastructure,
@@ -52,6 +55,7 @@ logger = config.logger
 def main():
     """Record the run, then hand off to the pipeline."""
     with run_state.record_run() as run:
+        reset_usage()
         _pipeline(run)
 
 
@@ -357,6 +361,16 @@ def _pipeline(run):
         run["failed"] = failed_count
         run["duplicates"] = sum(
             1 for r in rows if r["upload_status"].startswith("Skipped (checksum duplicate)"))
+
+        # Daily totals for the panel's Stats page. success_count includes the
+        # checksum duplicates, so they come off to leave real uploads.
+        failed_by_cause = {}
+        for r in rows:
+            cause = stats.failure_cause(r)
+            if cause:
+                failed_by_cause[cause] = failed_by_cause.get(cause, 0) + 1
+        stats.record_run(success_count - run["duplicates"], run["duplicates"],
+                         failed_by_cause, usage(), stats.fetch_backlog())
 
         print(f"Total rows processed: {total_rows}")
         print(f"Successful uploads:   {success_count}")

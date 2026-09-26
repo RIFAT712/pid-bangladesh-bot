@@ -75,6 +75,7 @@ MAINTAINERS_PATH = os.path.join(CREDS_DIR, 'maintainers.json')  # Who the owner 
 OAUTH_KEY_PATH = os.path.join(CREDS_DIR, 'oauth.key')        # Wikimedia OAuth consumer for panel edits
 WAYBACK_QUEUE_PATH = os.path.join(CREDS_DIR, 'wayback_pending.json')  # Persistent retry queue
 RUN_STATE_PATH = os.path.join(CREDS_DIR, 'run_state.json')   # Per-run outcomes, read by the panel
+STATS_PATH = os.path.join(CREDS_DIR, 'stats_daily.json')      # Daily totals, read by the panel's Stats page
 # Name corrections the panel writes and the bot reads. It belongs here and not
 # next to main.py for the same reason as everything above it: the webservice and
 # the job are separate pods off one image, and $TOOL_DATA_DIR is the only
