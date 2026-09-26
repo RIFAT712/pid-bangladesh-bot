@@ -698,35 +698,11 @@ def partial_gallery():
 
 @app.get('/upload/<unique_id>')
 def upload_detail(unique_id):
-    """Source image beside the cropped upload, with the text the bot read.
-
-    This is the only place the cropper's output can be checked without opening
-    Commons: if the separator was found in the wrong place, the two images side
-    by side show it immediately.
-    """
+    """Old links: the file page is where uploads are reviewed now."""
     record = commons.find_upload(unique_id)
     if not record:
         abort(404, 'No upload recorded with that id.')
-    # htmx asks for the fragment; a plain click (or no JS) gets a whole page.
-    page, revision = wikiauth.fetch_wikitext(f"File:{record['filename']}")
-    english, auto_translated, categories, parse_error = '', True, [], ''
-    if page is None:
-        parse_error = "Couldn't read the page from Commons."
-    else:
-        try:
-            english, auto_translated = wikitext.read_english(page)
-            categories = wikitext.read_categories(page)
-        except wikitext.Unparseable as e:
-            parse_error = f'This page is not in the shape the bot writes ({e}), so it is not editable here.'
-
-    template = '_detail.html' if request.headers.get('HX-Request') else 'detail.html'
-    return render_template(template, record=record,
-                           detail=commons.detail_for(unique_id),
-                           english=english, auto_translated=auto_translated,
-                           categories="\n".join(categories),
-                           parse_error=parse_error,
-                           thumb=commons.thumb_url,
-                           filepage=commons.file_page_url)
+    return redirect(url_for('file_detail', title=f"File:{record['filename']}"))
 
 
 def _allowed_source(url):
@@ -752,55 +728,6 @@ def _archived_copy(url, bucket):
         return ''
 
 
-@app.post('/upload/<unique_id>')
-def save_description(unique_id):
-    """Apply an edited description and categories to the file page.
-
-    Only files the bot recorded in PIDDateData can be edited here — the panel
-    must not become a general-purpose Commons editor — and only as the person
-    who signed in with OAuth.
-    """
-    record = commons.find_upload(unique_id)
-    if not record:
-        abort(404, 'No upload recorded with that id.')
-    token = session.get('wiki_token')
-    if not token:
-        abort(403, 'Sign in to Commons first.')
-
-    title = f"File:{record['filename']}"
-    page, revision = wikiauth.fetch_wikitext(title)
-    if page is None:
-        flash("Couldn't read that page from Commons; nothing was changed.")
-        return redirect(url_for('upload_detail', unique_id=unique_id))
-
-    try:
-        updated = wikitext.write_english(
-            page,
-            request.form.get('english', ''),
-            mark_auto_translated=request.form.get('reviewed') != 'on')
-        updated = wikitext.write_categories(
-            updated, request.form.get('categories', '').splitlines())
-    except wikitext.Unparseable as e:
-        flash(f'Not saved: {e}')
-        return redirect(url_for('upload_detail', unique_id=unique_id))
-
-    if updated == page:
-        flash('No change to save.')
-        return redirect(url_for('upload_detail', unique_id=unique_id))
-
-    try:
-        wikiauth.edit_description(
-            token, title, updated,
-            'Reviewed the auto-translated description via the PID control panel',
-            basetimestamp=request.form.get('base_revision'))
-    except Exception as e:
-        flash(f'Commons refused the edit: {e}')
-        return redirect(url_for('upload_detail', unique_id=unique_id))
-
-    flash('Saved to Commons.')
-    return redirect(url_for('upload_detail', unique_id=unique_id))
-
-
 # ── Commons work queues ───────────────────────────────────────────────────────
 #
 # The queues come from Commons, not from PIDDateData: the backlog is tens of
@@ -808,24 +735,24 @@ def save_description(unique_id):
 
 QUEUES = {
     'review': {
-        'label': 'Needs review',
-        'blurb': 'Still carrying the auto-translated marker. Check the English '
-                 'against the Bengali, fix it, then clear the marker.',
+        'label': 'Check the English',
+        'blurb': 'The English was written by Gemini and nobody has checked it yet. '
+                 'Compare it with the Bengali, fix it, then mark it checked.',
     },
     'uncategorised': {
         'label': 'Needs categories',
-        'blurb': 'In no topic category. Add what the photograph actually shows.',
+        'blurb': 'Not in any topic category yet. Add what the photo shows.',
         'category': commons.UNCATEGORISED,
     },
     'flagged': {
-        'label': 'Copyright flags',
-        'blurb': 'Flagged here as a possible copyright problem. Nothing is '
-                 'nominated for deletion — these are waiting for a decision.',
+        'label': 'Copyright questions',
+        'blurb': 'Flagged as a possible copyright problem. Nothing has been '
+                 'nominated for deletion; these are waiting for a decision.',
         'category': wikitext.CONCERNS_CATEGORY,
     },
     'month': {
-        'label': 'Browse by month',
-        'blurb': 'Everything the bot filed for a given month.',
+        'label': 'By month',
+        'blurb': 'Everything the bot uploaded in one month.',
     },
 }
 

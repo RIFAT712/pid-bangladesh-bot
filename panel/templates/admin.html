@@ -1,9 +1,9 @@
 {% extends 'base.html' %}
-{% block title %}Access — pid-bot{% endblock %}
+{% block title %}Access — PID upload bot{% endblock %}
 {% block content %}
 
   <section class="card">
-    <h2>Who can run this tool</h2>
+    <h2>Who can run the bot</h2>
     <p class="prose">
       Anyone signed in with a Wikimedia account can fix descriptions and
       categories on Commons. Running, pausing and stopping the job is limited to
@@ -18,7 +18,7 @@
       <ul class="people">
         <li class="person">
           <span class="person-name">{{ owner }}</span>
-          <span class="person-role">owner — set on the server, cannot be removed here</span>
+          <span class="person-role">owner (set on the server, can't be removed here)</span>
         </li>
         {% for entry in granted %}
           <li class="person">

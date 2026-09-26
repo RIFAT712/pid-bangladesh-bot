@@ -1401,6 +1401,18 @@ def test_overview_links_recent_uploads_to_their_file_page_and_hides_the_log():
         assert "Stderr" not in page
 
 
+def test_old_upload_links_land_on_the_file_page():
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712")
+        real = panel_app.commons.find_upload
+        panel_app.commons.find_upload = lambda uid: {"filename": "A.jpg", "unique_id": uid}
+        try:
+            r = client.get("/upload/u1")
+        finally:
+            panel_app.commons.find_upload = real
+        assert r.status_code == 302 and "/file/File:A.jpg" in r.headers["Location"], r.headers
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
