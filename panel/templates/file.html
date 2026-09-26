@@ -5,7 +5,7 @@
 <section class="card">
   {# Queue position and the two keys that matter, at the top where your hands are. #}
   <div class="queuenav">
-    <a class="link small" href="{{ url_for('uploads', queue=queue, month=month,
+    <a class="link small" href="{{ url_for('uploads', queue=queue, month=month, q=q or None,
                                            offset=offset, cursor=cursor) }}">
       &larr; {{ queues[queue].label }}</a>
     {% if position is not none %}
@@ -15,12 +15,12 @@
     <span class="queuenav-keys">
       {% if prev_title %}
         <a class="seg" id="prevlink"
-           href="{{ url_for('file_detail', title=prev_title, queue=queue, month=month,
+           href="{{ url_for('file_detail', title=prev_title, queue=queue, month=month, q=q or None,
                             offset=offset, cursor=cursor) }}">&larr; Previous</a>
       {% endif %}
       {% if next_title %}
         <a class="seg" id="nextlink"
-           href="{{ url_for('file_detail', title=next_title, queue=queue, month=month,
+           href="{{ url_for('file_detail', title=next_title, queue=queue, month=month, q=q or None,
                             offset=offset, cursor=cursor) }}">Next &rarr;</a>
       {% endif %}
     </span>
@@ -95,6 +95,7 @@
           <input type="hidden" name="month" value="{{ month }}">
           <input type="hidden" name="offset" value="{{ offset }}">
           <input type="hidden" name="cursor" value="{{ cursor }}">
+          <input type="hidden" name="q" value="{{ q }}">
           {# The revision this form was built from. Commons refuses the write if
              anyone has edited since, rather than quietly reverting them. #}
           <input type="hidden" name="base_revision" value="{{ base_revision }}">
@@ -165,6 +166,7 @@
               <input type="hidden" name="month" value="{{ month }}">
               <input type="hidden" name="offset" value="{{ offset }}">
               <input type="hidden" name="cursor" value="{{ cursor }}">
+          <input type="hidden" name="q" value="{{ q }}">
               <input type="hidden" name="base_revision" value="{{ base_revision }}">
               <input type="hidden" name="next_title" value="{{ next_title or '' }}">
 

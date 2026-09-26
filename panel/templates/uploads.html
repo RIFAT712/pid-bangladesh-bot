@@ -3,10 +3,20 @@
 {% block content %}
 
 <section class="card">
+  <form method="get" action="{{ url_for('uploads') }}" class="searchbar" role="search">
+    <input type="hidden" name="queue" value="{{ queue }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <input type="hidden" name="month" value="{{ month }}">
+    <input type="search" name="q" value="{{ q }}" aria-label="Search PID photos"
+           placeholder="Search by name, place or date, in English or Bengali">
+    <button type="submit" class="primary">Search</button>
+    {% if q %}<a href="{{ url_for('uploads', queue=queue, year=year, month=month) }}">Clear</a>{% endif %}
+  </form>
+
   <div class="queuebar">
     {% for key, q in queues.items() %}
       <a class="seg {% if queue == key %}on{% endif %}"
-         href="{{ url_for('uploads', queue=key, year=year,
+         href="{{ url_for('uploads', queue=key, year=year, q=q or None,
                           month=month if key != 'review' or month else None) }}">
         {{ q.label }}{% if key == 'uncategorised' %} ({{ uncategorised_count }}){% endif %}
       </a>
@@ -15,13 +25,14 @@
     {% if queue != 'uncategorised' %}
       <form method="get" action="{{ url_for('uploads') }}" class="monthpick">
         <input type="hidden" name="queue" value="{{ queue }}">
+        <input type="hidden" name="q" value="{{ q }}">
         <select name="year" onchange="this.form.submit()">
           {% for y in years %}
             <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
           {% endfor %}
         </select>
         <select name="month" onchange="this.form.submit()">
-          <option value="">{% if queue == 'review' %}every month{% else %}pick a month{% endif %}</option>
+          <option value="">{% if queue in ('review', 'all') %}every month{% else %}pick a month{% endif %}</option>
           {% for m in months %}
             <option value="{{ m }}" {% if m == month %}selected{% endif %}>
               {{ m.replace('PID-BD images from ', '') }}</option>
@@ -31,18 +42,19 @@
     {% endif %}
   </div>
 
-  <p class="hint">{{ queues[queue].blurb }}
+  <p class="hint">{% if q %}Searching for <b>{{ q }}</b> in {{ queues[queue].label }}.{% else %}{{ queues[queue].blurb }}{% endif %}
     {% if total %}<b>{{ '{:,}'.format(total) }}</b> file{{ '' if total == 1 else 's' }} in this queue.{% endif %}
   </p>
 
   {% if not titles %}
-    <p class="prose">Nothing here. Either the queue is clear or Commons is unreachable.</p>
+    <p class="prose">{% if q %}No PID photos match <b>{{ q }}</b> in this list. Try fewer words, or the All list.{% else %}Nothing here. Either the list is clear or Commons is unreachable.{% endif %}</p>
   {% else %}
     <form method="post" action="{{ url_for('bulk_categorise') }}" id="bulk">
       <input type="hidden" name="queue" value="{{ queue }}">
       <input type="hidden" name="year" value="{{ year }}">
       <input type="hidden" name="month" value="{{ month }}">
       <input type="hidden" name="offset" value="{{ offset }}">
+      <input type="hidden" name="q" value="{{ q }}">
       <input type="hidden" name="cursor" value="{{ cursor if cursor is defined else '' }}">
 
       <div class="grid">
@@ -53,7 +65,7 @@
                 <input type="checkbox" name="titles" value="{{ t }}">
               </label>
             {% endif %}
-            <a href="{{ url_for('file_detail', title=t, queue=queue, month=month,
+            <a href="{{ url_for('file_detail', title=t, queue=queue, month=month, q=q or None,
                                 offset=offset, cursor=cursor if cursor is defined else '') }}">
               <img src="{{ thumb(t[5:], 320) }}" alt="{{ t[5:] }}" loading="lazy">
             </a>
@@ -143,15 +155,15 @@
 
     <div class="pager">
       {% if offset %}
-        <a class="link" href="{{ url_for('uploads', queue=queue, year=year, month=month,
+        <a class="link" href="{{ url_for('uploads', queue=queue, year=year, month=month, q=q or None,
                                          offset=[offset - titles|length, 0]|max) }}">Previous page</a>
       {% endif %}
       <span class="hint">{{ titles|length }} shown{% if offset %}, from {{ offset }}{% endif %}</span>
       {% if next_offset %}
-        <a class="link" href="{{ url_for('uploads', queue=queue, year=year, month=month,
+        <a class="link" href="{{ url_for('uploads', queue=queue, year=year, month=month, q=q or None,
                                          offset=next_offset) }}">Next page</a>
       {% elif next_cursor %}
-        <a class="link" href="{{ url_for('uploads', queue=queue, year=year, month=month,
+        <a class="link" href="{{ url_for('uploads', queue=queue, year=year, month=month, q=q or None,
                                          cursor=next_cursor) }}">Next page</a>
       {% endif %}
     </div>

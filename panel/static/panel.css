@@ -660,3 +660,7 @@ button.suggest:focus-visible { background: var(--surface-alt); color: var(--acce
 .corr-add input, .corr-row input { flex: 1 1 12rem; }
 .corr-row input[lang="bn"], .corr-add input[lang="bn"] { font-family: var(--bn); }
 .corr-filter { width: 100%; max-width: 24rem; margin-bottom: 0.75rem; }
+
+/* ── Search ────────────────────────────────────────────────────────────── */
+.searchbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+.searchbar input[type="search"] { flex: 1 1 16rem; }

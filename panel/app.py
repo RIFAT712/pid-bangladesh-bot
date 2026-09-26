@@ -767,23 +767,50 @@ QUEUES = {
         'label': 'By month',
         'blurb': 'Everything the bot uploaded in one month.',
     },
+    'all': {
+        'label': 'All',
+        'blurb': 'Every PID photo on Commons, including ones uploaded before the bot.',
+    },
 }
 
+# Every PID file carries this licence, whoever uploaded it, so it is what
+# "All" means to Commons search.
+PID_FILES = 'hastemplate:"PD-BDGov-PID"'
 
-def _queue_titles(queue, month, offset, cursor):
+
+def _this_month():
+    now = datetime.now(timezone.utc)
+    return commons.month_categories(now.year)[now.month - 1]
+
+
+def search_query(queue, month, q):
+    """The CirrusSearch string for a list plus typed text, or None when the
+    list is a category and nothing was typed (a category listing is cheaper
+    and pages with a cursor)."""
+    q = ' '.join((q or '').split())
+    if q.count('"') % 2:
+        q = q.replace('"', ' ')         # an unclosed phrase would swallow the rest
+        q = ' '.join(q.split())
+    if queue in ('review', 'all'):
+        base = commons.REVIEW_SEARCH if queue == 'review' else PID_FILES
+        if month:
+            base += ' incategory:"%s"' % month
+    elif not q:
+        return None
+    else:
+        base = 'incategory:"%s"' % (QUEUES[queue].get('category') or month or _this_month())
+    return f'{base} {q}'.strip()
+
+
+def _queue_titles(queue, month, offset, cursor, q=''):
     """(titles, next_offset, next_cursor, total) for one page of a queue."""
     bucket = commons._bucket()
-
-    # Every queue but 'review' is a category; 'month' just picks its own.
-    target = QUEUES[queue].get('category')
-    if queue == 'month':
-        target = month or commons.month_categories(
-            datetime.now(timezone.utc).year)[datetime.now(timezone.utc).month - 1]
-    if target:
+    search = search_query(queue, month, q)
+    if search is None:
+        # A category list with nothing typed; 'month' just picks its own.
+        target = QUEUES[queue].get('category') or month or _this_month()
         titles, nxt = commons.category_page(target, cursor, bucket)
         return titles, None, nxt, commons.category_size(target, bucket)
-
-    search = commons.REVIEW_SEARCH + (' incategory:"%s"' % month if month else '')
     titles, total = commons.search_page(search, offset, bucket)
     return titles, offset + len(titles), '', total
 
@@ -797,13 +824,14 @@ def uploads():
     month = request.args.get('month', '')
     offset = int(request.args.get('offset', 0) or 0)
     cursor = request.args.get('cursor', '')
+    q = request.args.get('q', '').strip()
 
     titles, next_offset, next_cursor, total = _queue_titles(
-        queue, month, offset, cursor)
+        queue, month, offset, cursor, q)
     bucket = commons._bucket()
 
     return render_template(
-        'uploads.html', queue=queue, queues=QUEUES, year=year, month=month,
+        'uploads.html', queue=queue, queues=QUEUES, year=year, month=month, q=q,
         titles=titles, total=total, offset=offset,
         next_offset=next_offset, next_cursor=next_cursor,
         months=commons.month_categories(year),
@@ -835,7 +863,8 @@ def bulk_categorise():
               'year': request.form.get('year', ''),
               'month': request.form.get('month', ''),
               'offset': request.form.get('offset', 0),
-              'cursor': request.form.get('cursor', '')}
+              'cursor': request.form.get('cursor', ''),
+              'q': request.form.get('q', '')}
 
     titles = request.form.getlist('titles')[:BULK_LIMIT]
     # Newlines only: category names contain commas ("Dhaka, Bangladesh").
@@ -909,9 +938,10 @@ def file_detail(title):
     month = request.args.get('month', '')
     offset = int(request.args.get('offset', 0) or 0)
     cursor = request.args.get('cursor', '')
+    q = request.args.get('q', '').strip()
 
     titles, _next_offset, _next_cursor, total = _queue_titles(
-        queue, month, offset, cursor)
+        queue, month, offset, cursor, q)
     position = titles.index(title) if title in titles else None
 
     page, revision = wikiauth.fetch_wikitext(title)
@@ -965,7 +995,7 @@ def file_detail(title):
         next_title=(titles[position + 1]
                     if position is not None and position + 1 < len(titles) else None),
         position=position, page_count=len(titles), total=total,
-        queue=queue, month=month, offset=offset, cursor=cursor, queues=QUEUES,
+        queue=queue, month=month, offset=offset, cursor=cursor, q=q, queues=QUEUES,
         name_matches=name_matches,
         bengali_html=highlight_names(bengali, name_matches),
         existing_tag=existing_tag, reasons=wikitext.REASONS,
@@ -985,7 +1015,8 @@ def save_file(title):
     onward = {'queue': request.form.get('queue', 'review'),
               'month': request.form.get('month', ''),
               'offset': request.form.get('offset', 0),
-              'cursor': request.form.get('cursor', '')}
+              'cursor': request.form.get('cursor', ''),
+              'q': request.form.get('q', '')}
 
     page, _revision = wikiauth.fetch_wikitext(title)
     if page is None:
@@ -1107,7 +1138,8 @@ def tag_file(title):
     onward = {'queue': request.form.get('queue', 'review'),
               'month': request.form.get('month', ''),
               'offset': request.form.get('offset', 0),
-              'cursor': request.form.get('cursor', '')}
+              'cursor': request.form.get('cursor', ''),
+              'q': request.form.get('q', '')}
     back = redirect(url_for('file_detail', title=title, **onward))
 
     reason = request.form.get('reason', '')

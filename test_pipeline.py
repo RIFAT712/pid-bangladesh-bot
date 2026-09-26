@@ -1531,6 +1531,63 @@ def test_a_name_fix_that_cannot_be_saved_is_reported():
         assert "not remembered" in r.get_data(as_text=True)
 
 
+# ── Search ────────────────────────────────────────────────────────────────────
+
+def test_search_text_is_combined_with_each_lists_filter():
+    sq = panel_app.search_query
+    assert sq("all", "", "Yunus") == 'hastemplate:"PD-BDGov-PID" Yunus'
+    assert sq("all", "", "") == 'hastemplate:"PD-BDGov-PID"'
+    assert sq("review", "PID-BD images from September 2026", "Yunus") == \
+        'hastemplate:"Auto-translated PID English description" ' \
+        'incategory:"PID-BD images from September 2026" Yunus'
+    assert sq("uncategorised", "", "Yunus") == \
+        'incategory:"Press Information Department images without category" Yunus'
+    assert sq("month", "PID-BD images from May 2025", "  Japan   ambassador ") == \
+        'incategory:"PID-BD images from May 2025" Japan ambassador'
+    assert sq("uncategorised", "", "") is None, "empty search should use the category listing"
+
+
+def test_an_unclosed_quote_cannot_swallow_the_filter():
+    assert panel_app.search_query("all", "", 'Japan "ambassador') == \
+        'hastemplate:"PD-BDGov-PID" Japan ambassador'
+    assert panel_app.search_query("all", "", '"Japan ambassador"') == \
+        'hastemplate:"PD-BDGov-PID" "Japan ambassador"'
+
+
+def test_searching_uploads_uses_commons_search_and_keeps_the_query():
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _panel_client(tmp, owner="RIFAT712")
+        asked = []
+        real = {k: getattr(panel_app.commons, k) for k in ("search_page", "category_size")}
+        panel_app.commons.search_page = lambda query, offset, bucket, limit=48: (
+            asked.append(query) or (("File:Yunus meets.jpg",), 1))
+        panel_app.commons.category_size = lambda *a, **k: 0
+        try:
+            body = client.get("/uploads?queue=all&q=Yunus").get_data(as_text=True)
+        finally:
+            for k, v in real.items():
+                setattr(panel_app.commons, k, v)
+        assert asked == ['hastemplate:"PD-BDGov-PID" Yunus'], asked
+        assert 'value="Yunus"' in body, "search box lost the query"
+        assert "q=Yunus" in body, "file links don't carry the search"
+
+
+def test_the_file_page_walks_the_search_results():
+    with tempfile.TemporaryDirectory() as tmp:
+        client, _, restore = _file_page_client(tmp, "{{bn|1=x}}{{en|1=y}}\n")
+        panel_app.wikiauth.consumer = lambda: object()   # sign-in set up, so the form renders
+        seen = []
+        panel_app._queue_titles = lambda *a, **k: (seen.append((a, k)) or
+                                                   (("File:X.jpg", "File:Y.jpg"), None, "", 2))
+        try:
+            body = client.get("/file/File:X.jpg?queue=all&q=Yunus").get_data(as_text=True)
+        finally:
+            restore()
+        assert any("Yunus" in list(a) + list(k.values()) for a, k in seen), seen
+        assert "q=Yunus" in body, "next/previous links drop the search"
+        assert 'name="q" value="Yunus"' in body, "saving would drop the search"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
